@@ -1,0 +1,18 @@
+# For more information about the available options please visit: http://go/catalog-info (VPN required)
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  annotations:
+    github.com/project-slug: Unity-Technologies/cse-memory-snapshot-data-tool
+    backstage.io/techdocs-ref: dir:.
+  name: cse-memory-snapshot-data-tool
+  description: "A command line tool, developed by the CSE Consulting team, offering tools to export Unity Memory Snapshot files to database files and generate HTML reports."
+  labels:
+    costcenter: "1061"
+  tags:
+    - planned-public
+    - enterprise
+spec:
+  type: cli
+  lifecycle: experimental
+  owner: Unity-Technologies/cse-consulting
