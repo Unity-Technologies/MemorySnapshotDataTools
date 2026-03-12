@@ -1,0 +1,25 @@
+# Build / output
+bin/
+obj/
+artifacts/
+publish/
+
+# IDE
+*.user
+*.suo
+.vs/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Report artifacts
+*.log
+*.duckdb
+*.db
+*.html
+
+# Snapshots
+*.snap
+MemoryCaptures/

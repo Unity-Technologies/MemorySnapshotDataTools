@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>MemorySnapshotDataTools</RootNamespace>
+    <AssemblyName>MemorySnapshotDataTools.Core</AssemblyName>
+    <InternalsVisibleTo>MemorySnapshotDataTools.Tests</InternalsVisibleTo>
+    <InternalsVisibleTo>MemorySnapshotDataTools</InternalsVisibleTo>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DuckDB.NET.Data.Full" Version="1.4.4" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.3" />
+  </ItemGroup>
+</Project>
