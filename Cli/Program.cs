@@ -2,6 +2,7 @@ using System.Diagnostics;
 using MemorySnapshotDataTools;
 using MemorySnapshotDataTools.Export;
 using MemorySnapshotDataTools.ExportDestination;
+using MemorySnapshotDataTools.Gephi;
 using MemorySnapshotDataTools.Parser;
 using MemorySnapshotDataTools.Report;
 
@@ -11,7 +12,7 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
-        var root = CommandLineBuilder.Build(RunExport, RunReport);
+        var root = CommandLineBuilder.Build(RunExport, RunReport, RunGephi);
         return root.Parse(args).Invoke();
     }
 
@@ -96,6 +97,34 @@ internal static class Program
         };
         var progress = new ConsoleProgress(options.Verbose);
         return ReportRunner.Run(reportOptions, progress);
+    }
+
+    private static int RunGephi(CliOptions options)
+    {
+        var progress = new ConsoleProgress(options.Verbose);
+        try
+        {
+            GephiExport.RunFromDatabase(
+                options.GephiDbPath,
+                options.GephiOutPath,
+                options.GephiNodesPath,
+                options.GephiMode,
+                progress);
+            progress.Report($"Gephi export complete: edges -> {options.GephiOutPath}" +
+                (options.GephiNodesPath != null ? $", nodes -> {options.GephiNodesPath}" : ""), force: true);
+            return 0;
+        }
+        catch (NotSupportedException ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("Gephi export failed.");
+            Console.Error.WriteLine(ex);
+            return 3;
+        }
     }
 
     private static void RunStage(string stage, ConsoleProgress progress, Action action)

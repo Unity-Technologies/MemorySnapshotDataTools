@@ -6,6 +6,7 @@ internal enum CommandKind
 {
     Export,
     Report,
+    Gephi,
 }
 
 /// <summary>
@@ -24,6 +25,18 @@ internal sealed class CliOptions
     public ValidationMode Validate { get; set; } = ValidationMode.Minimal;
     public DestinationKind Destination { get; set; } = DestinationKind.DuckDb;
     public bool Verbose { get; set; }
+
+    /// <summary>Path to the database for Gephi export (gephi command).</summary>
+    public string GephiDbPath { get; set; } = string.Empty;
+
+    /// <summary>Output path for the edges CSV (gephi command).</summary>
+    public string GephiOutPath { get; set; } = string.Empty;
+
+    /// <summary>Optional output path for the nodes CSV (gephi command).</summary>
+    public string? GephiNodesPath { get; set; }
+
+    /// <summary>Gephi export mode: native, managed, or mixed (only native is supported).</summary>
+    public string GephiMode { get; set; } = "native";
 }
 
 internal sealed class ConsoleProgress : IProgressReporter

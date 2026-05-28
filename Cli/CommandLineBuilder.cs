@@ -8,7 +8,7 @@ namespace MemorySnapshotDataTools.Cli;
 /// </summary>
 internal static class CommandLineBuilder
 {
-    public static RootCommand Build(Func<CliOptions, int> runExport, Func<CliOptions, int> runReport)
+    public static RootCommand Build(Func<CliOptions, int> runExport, Func<CliOptions, int> runReport, Func<CliOptions, int> runGephi)
     {
         var root = new RootCommand("Export Unity memory snapshots to DuckDB or SQLite and generate HTML reports.");
 
@@ -130,8 +130,68 @@ internal static class CommandLineBuilder
             return runReport(options);
         });
 
+        // ---- gephi ----
+        var gephiCmd = new Command("gephi", "Export edge list for Gephi (native, managed, or mixed object graph).");
+        var gephiDatabaseArg = new Argument<string>("database")
+        {
+            Description = "Path to the exported snapshot database (.duckdb or .db).",
+            Arity = ArgumentArity.ExactlyOne,
+        };
+        gephiCmd.Add(gephiDatabaseArg);
+
+        var gephiOutOpt = new Option<string>("--out")
+        {
+            Description = "Output path for the edges CSV (required).",
+        };
+        var gephiNodesOpt = new Option<string?>("--nodes")
+        {
+            Description = "Optional path for the nodes CSV; if omitted, only the edges file is written.",
+        };
+        var gephiModeOpt = new Option<string>("--mode")
+        {
+            Description = "Export mode: native (default), managed, or mixed. Only native is implemented.",
+            DefaultValueFactory = _ => "native",
+        };
+        gephiModeOpt.AcceptOnlyFromAmong("native", "managed", "mixed");
+        var gephiVerboseOpt = new Option<bool>("--verbose")
+        {
+            Description = "Print progress updates.",
+        };
+
+        gephiCmd.Add(gephiOutOpt);
+        gephiCmd.Add(gephiNodesOpt);
+        gephiCmd.Add(gephiModeOpt);
+        gephiCmd.Add(gephiVerboseOpt);
+
+        gephiCmd.SetAction((ParseResult parseResult) =>
+        {
+            var dbPath = ExpandPath(parseResult.GetValue(gephiDatabaseArg)!);
+            if (!File.Exists(dbPath))
+            {
+                Console.Error.WriteLine($"Database file not found: {dbPath}");
+                return 1;
+            }
+            var outPath = parseResult.GetValue(gephiOutOpt);
+            if (string.IsNullOrWhiteSpace(outPath))
+            {
+                Console.Error.WriteLine("The --out option is required for the gephi command.");
+                return 1;
+            }
+            var options = new CliOptions
+            {
+                Command = CommandKind.Gephi,
+                GephiDbPath = dbPath,
+                GephiOutPath = ExpandPath(outPath),
+                GephiNodesPath = parseResult.GetValue(gephiNodesOpt) is { } n && !string.IsNullOrWhiteSpace(n) ? ExpandPath(n) : null,
+                GephiMode = parseResult.GetValue(gephiModeOpt)!,
+                Verbose = parseResult.GetValue(gephiVerboseOpt),
+            };
+            return runGephi(options);
+        });
+
         root.Add(exportCmd);
         root.Add(reportCmd);
+        root.Add(gephiCmd);
         return root;
     }
 
