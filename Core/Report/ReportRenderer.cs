@@ -75,6 +75,11 @@ internal static class ReportRenderer
         td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 12px; color: #333; }
         td.warn { color: #c0392b; font-weight: 600; }
         td.trunc { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+        td.pct-fill { min-width: 140px; }
+        .pct-fill-wrap { display: flex; align-items: center; gap: 8px; }
+        .pct-fill-bar { flex: 1; min-width: 48px; height: 16px; background: #e8eaed; border-radius: 4px; overflow: hidden; position: relative; }
+        .pct-fill-inner { position: absolute; left: 0; top: 0; bottom: 0; background: #1a73e8; border-radius: 4px; transition: width .15s ease; }
+        .pct-fill-text { font-variant-numeric: tabular-nums; font-size: 12px; color: #333; flex-shrink: 0; }
         .empty { padding: 18px; color: #999; font-style: italic; }
         .kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; padding: 16px 18px; border-bottom: 1px solid #f0f2f5; }
         .kv-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: .05em; }

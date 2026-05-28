@@ -111,8 +111,8 @@ internal static class ReportBuilder
 
         var nativeGroup = new ReportGroup { GroupTitle = "🧱 Native Objects", GroupDesc = "Native Unity objects — types, sizes, and duplication" };
         nativeGroup.Sections.Add(new ReportSection { Anchor = "native-overview", SectionTitle = "📊 Overview", ContentHtml = ReportHtmlHelper.Section("native-overview", "📊 Overview", insightNatOv + ReportHtmlHelper.RenderTable(natOvCols, natOvRows), null) });
-        nativeGroup.Sections.Add(new ReportSection { Anchor = "native-types", SectionTitle = "🏆 Top Types by Size", ContentHtml = ReportHtmlHelper.Section("native-types", "🏆 Top Types by Size", insightTypes + ReportHtmlHelper.RenderTable(natTyCols, natTyRows, truncateCols: new HashSet<string> { "type_name" }), natTyRows.Count), RowCount = natTyRows.Count });
-        nativeGroup.Sections.Add(new ReportSection { Anchor = "size-buckets", SectionTitle = "📐 Size Distribution (log₄)", ContentHtml = ReportHtmlHelper.Section("size-buckets", "📐 Size Distribution (log₄)", ReportHtmlHelper.RenderTable(bktCols, bktRows), bktRows.Count), RowCount = bktRows.Count });
+        nativeGroup.Sections.Add(new ReportSection { Anchor = "native-types", SectionTitle = "🏆 Top Types by Size", ContentHtml = ReportHtmlHelper.Section("native-types", "🏆 Top Types by Size", insightTypes + ReportHtmlHelper.RenderTable(natTyCols, natTyRows, truncateCols: new HashSet<string> { "type_name" }, pctFillCols: new HashSet<string> { "pct_of_total" }), natTyRows.Count), RowCount = natTyRows.Count });
+        nativeGroup.Sections.Add(new ReportSection { Anchor = "size-buckets", SectionTitle = "📐 Size Distribution (log₄)", ContentHtml = ReportHtmlHelper.Section("size-buckets", "📐 Size Distribution (log₄)", ReportHtmlHelper.RenderTable(bktCols, bktRows, pctFillCols: new HashSet<string> { "pct_of_total" }), bktRows.Count), RowCount = bktRows.Count });
         nativeGroup.Sections.Add(new ReportSection { Anchor = "top-objects", SectionTitle = "🔝 Top 50 Largest Objects", ContentHtml = ReportHtmlHelper.Section("top-objects", "🔝 Top 50 Largest Objects", insightTop50 + ReportHtmlHelper.RenderTable(top50Cols, top50Rows, truncateCols: new HashSet<string> { "name" }), top50Rows.Count), RowCount = top50Rows.Count });
         nativeGroup.Sections.Add(new ReportSection { Anchor = "duplicates", SectionTitle = "⚠️ Duplicate Assets", ContentHtml = ReportHtmlHelper.Section("duplicates", "⚠️ Duplicate Assets", insightDups + ReportHtmlHelper.RenderTable(dupCols, dupRows, warnCol: "wasted_mb", truncateCols: new HashSet<string> { "name" }), dupRows.Count), RowCount = dupRows.Count });
         AddNav(model, nativeGroup);
@@ -137,7 +137,7 @@ internal static class ReportBuilder
 
         var managedGroup = new ReportGroup { GroupTitle = "🧠 Managed Heap", GroupDesc = "GC-managed objects and type allocations" };
         managedGroup.Sections.Add(new ReportSection { Anchor = "managed-overview", SectionTitle = "📊 Overview", ContentHtml = ReportHtmlHelper.Section("managed-overview", "📊 Overview", insightMgOv + ReportHtmlHelper.RenderTable(mgOvCols, mgOvRows), null) });
-        managedGroup.Sections.Add(new ReportSection { Anchor = "managed-types", SectionTitle = "🏆 Top Types by Size", ContentHtml = ReportHtmlHelper.Section("managed-types", "🏆 Top Types by Size", insightMgTy + ReportHtmlHelper.RenderTable(mgTyCols, mgTyRows, truncateCols: new HashSet<string> { "type_name" }), mgTyRows.Count), RowCount = mgTyRows.Count });
+        managedGroup.Sections.Add(new ReportSection { Anchor = "managed-types", SectionTitle = "🏆 Top Types by Size", ContentHtml = ReportHtmlHelper.Section("managed-types", "🏆 Top Types by Size", insightMgTy + ReportHtmlHelper.RenderTable(mgTyCols, mgTyRows, truncateCols: new HashSet<string> { "type_name" }, pctFillCols: new HashSet<string> { "pct_of_total" }), mgTyRows.Count), RowCount = mgTyRows.Count });
         AddNav(model, managedGroup);
         model.Groups.Add(managedGroup);
 

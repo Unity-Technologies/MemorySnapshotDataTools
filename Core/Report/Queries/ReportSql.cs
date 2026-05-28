@@ -41,31 +41,61 @@ internal static class ReportSql
         LIMIT 40;
         """;
 
-    /// <summary>Returns SQL for native object size distribution by log4 bucket. DuckDB uses LOG(4,x); SQLite uses log(x)/log(4).</summary>
+    /// <summary>Returns SQL for native object size distribution by log4 bucket. DuckDB uses LOG(4,x); SQLite uses log(x)/log(4). Includes a human-readable size_range (e.g. "1 – 4 MB").</summary>
     /// <param name="dialect">Backend dialect for LOG function.</param>
     /// <returns>SQL string for the size bucket query.</returns>
     public static string SizeBucketDistribution(ReportBackendDialect dialect) => dialect switch
     {
         ReportBackendDialect.DuckDb => """
+            WITH bkt AS (
+                SELECT
+                    CAST(FLOOR(LOG(4, NULLIF(size_bytes, 0))) AS INTEGER) AS log4_bucket,
+                    ROUND(POWER(4.0, CAST(FLOOR(LOG(4, NULLIF(size_bytes, 0))) AS INTEGER)) / 1024.0 / 1024, 3) AS bucket_floor_mb,
+                    COUNT(*) AS obj_count,
+                    ROUND(SUM(size_bytes) / 1024.0 / 1024, 2) AS total_mb,
+                    ROUND(100.0 * SUM(size_bytes) / NULLIF(SUM(SUM(size_bytes)) OVER (), 0), 1) AS pct_of_total
+                FROM native_objects
+                WHERE size_bytes > 0
+                GROUP BY 1
+            )
             SELECT
-                CAST(FLOOR(LOG(4, NULLIF(size_bytes, 0))) AS INTEGER) AS log4_bucket,
-                ROUND(POWER(4.0, CAST(FLOOR(LOG(4, NULLIF(size_bytes, 0))) AS INTEGER)) / 1024.0 / 1024, 3) AS bucket_floor_mb,
-                COUNT(*) AS obj_count,
-                ROUND(SUM(size_bytes) / 1024.0 / 1024, 2) AS total_mb
-            FROM native_objects
-            WHERE size_bytes > 0
-            GROUP BY log4_bucket
+                CASE
+                    WHEN POWER(4.0, log4_bucket + 1) >= 1048576 THEN ROUND(POWER(4.0, log4_bucket) / 1024.0 / 1024.0, 2)::VARCHAR || ' – ' || ROUND(POWER(4.0, log4_bucket + 1) / 1024.0 / 1024.0, 2)::VARCHAR || ' MB'
+                    WHEN POWER(4.0, log4_bucket + 1) >= 1024 THEN ROUND(POWER(4.0, log4_bucket) / 1024.0, 1)::VARCHAR || ' – ' || ROUND(POWER(4.0, log4_bucket + 1) / 1024.0, 1)::VARCHAR || ' KB'
+                    ELSE CAST(POWER(4, log4_bucket) AS VARCHAR) || ' – ' || CAST(POWER(4, log4_bucket + 1) AS VARCHAR) || ' B'
+                END AS size_range,
+                log4_bucket,
+                bucket_floor_mb,
+                obj_count,
+                total_mb,
+                pct_of_total
+            FROM bkt
             ORDER BY log4_bucket DESC;
             """,
         ReportBackendDialect.Sqlite => """
+            WITH bkt AS (
+                SELECT
+                    CAST(FLOOR(CAST(log(NULLIF(size_bytes, 0)) / log(4) AS REAL)) AS INTEGER) AS log4_bucket,
+                    ROUND(POWER(4.0, CAST(FLOOR(CAST(log(NULLIF(size_bytes, 0)) / log(4) AS REAL)) AS INTEGER)) / 1024.0 / 1024, 3) AS bucket_floor_mb,
+                    COUNT(*) AS obj_count,
+                    ROUND(SUM(size_bytes) / 1024.0 / 1024, 2) AS total_mb,
+                    ROUND(100.0 * SUM(size_bytes) / NULLIF(SUM(SUM(size_bytes)) OVER (), 0), 1) AS pct_of_total
+                FROM native_objects
+                WHERE size_bytes > 0
+                GROUP BY 1
+            )
             SELECT
-                CAST(FLOOR(CAST(log(NULLIF(size_bytes, 0)) / log(4) AS REAL)) AS INTEGER) AS log4_bucket,
-                ROUND(POWER(4.0, CAST(FLOOR(CAST(log(NULLIF(size_bytes, 0)) / log(4) AS REAL)) AS INTEGER)) / 1024.0 / 1024, 3) AS bucket_floor_mb,
-                COUNT(*) AS obj_count,
-                ROUND(SUM(size_bytes) / 1024.0 / 1024, 2) AS total_mb
-            FROM native_objects
-            WHERE size_bytes > 0
-            GROUP BY log4_bucket
+                CASE
+                    WHEN POWER(4.0, log4_bucket + 1) >= 1048576 THEN CAST(ROUND(POWER(4.0, log4_bucket) / 1024.0 / 1024.0, 2) AS TEXT) || ' – ' || CAST(ROUND(POWER(4.0, log4_bucket + 1) / 1024.0 / 1024.0, 2) AS TEXT) || ' MB'
+                    WHEN POWER(4.0, log4_bucket + 1) >= 1024 THEN CAST(ROUND(POWER(4.0, log4_bucket) / 1024.0, 1) AS TEXT) || ' – ' || CAST(ROUND(POWER(4.0, log4_bucket + 1) / 1024.0, 1) AS TEXT) || ' KB'
+                    ELSE CAST(CAST(POWER(4, log4_bucket) AS INTEGER) AS TEXT) || ' – ' || CAST(CAST(POWER(4, log4_bucket + 1) AS INTEGER) AS TEXT) || ' B'
+                END AS size_range,
+                log4_bucket,
+                bucket_floor_mb,
+                obj_count,
+                total_mb,
+                pct_of_total
+            FROM bkt
             ORDER BY log4_bucket DESC;
             """,
         _ => throw new ArgumentOutOfRangeException(nameof(dialect)),

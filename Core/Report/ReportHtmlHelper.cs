@@ -93,13 +93,14 @@ internal static class ReportHtmlHelper
         return double.TryParse(o.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out d);
     }
 
-    /// <summary>Renders a sortable HTML table from column names and row arrays; optional warn column and truncation set.</summary>
+    /// <summary>Renders a sortable HTML table from column names and row arrays; optional warn column, truncation set, and percentage-fill columns.</summary>
     /// <param name="columns">Column headers.</param>
     /// <param name="rows">Rows of cell values (length may vary per row).</param>
     /// <param name="warnCol">If set, cells in this column with value &gt; 0 get a warning style.</param>
     /// <param name="truncateCols">Column names to truncate with ellipsis and title=full value.</param>
+    /// <param name="pctFillCols">Column names to render with a visual fill bar indicating percentage of total (e.g. pct_of_total).</param>
     /// <returns>HTML fragment (table wrapped in div).</returns>
-    public static string RenderTable(string[] columns, List<object?[]> rows, string? warnCol = null, IReadOnlySet<string>? truncateCols = null)
+    public static string RenderTable(string[] columns, List<object?[]> rows, string? warnCol = null, IReadOnlySet<string>? truncateCols = null, IReadOnlySet<string>? pctFillCols = null)
     {
         if (rows.Count == 0)
             return "<p class=\"empty\">No data available for this section.</p>";
@@ -123,18 +124,34 @@ internal static class ReportHtmlHelper
                 var isNum = IsNumericCol(col);
                 var isTrunc = truncateCols != null && truncateCols.Contains(col);
                 var isWarn = warnCol == col && val != null && TryDouble(val, out var v) && v > 0;
+                double pctFillVal = 0;
+                var isPctFill = pctFillCols != null && pctFillCols.Contains(col) && val != null && TryDouble(val, out pctFillVal);
                 var classes = new List<string>();
                 if (isNum) classes.Add("num");
                 if (isTrunc) classes.Add("trunc");
                 if (isWarn) classes.Add("warn");
+                if (isPctFill) classes.Add("pct-fill");
                 var cls = classes.Count > 0 ? " class=\"" + string.Join(" ", classes) + "\"" : "";
                 var title = isTrunc && val != null ? " title=\"" + Escape(val) + "\"" : "";
-                sb.Append($"<td{cls}{title}>{FmtCell(col, val)}</td>");
+                var cellContent = isPctFill
+                    ? RenderPctFillCell(pctFillVal)
+                    : FmtCell(col, val);
+                sb.Append($"<td{cls}{title}>{cellContent}</td>");
             }
             sb.Append("</tr>");
         }
         sb.Append("</tbody></table></div>");
         return sb.ToString();
+    }
+
+    /// <summary>Renders a percentage value as a bar with fill (width = percentage) and numeric label for visual impact.</summary>
+    /// <param name="pct">Percentage value (0–100).</param>
+    /// <returns>HTML fragment for the cell.</returns>
+    private static string RenderPctFillCell(double pct)
+    {
+        var pctClamped = Math.Clamp(pct, 0, 100);
+        var pctStr = pct.ToString("N1", CultureInfo.InvariantCulture) + "%";
+        return $"<div class=\"pct-fill-wrap\"><div class=\"pct-fill-bar\"><div class=\"pct-fill-inner\" style=\"width:{pctClamped.ToString(CultureInfo.InvariantCulture)}%\"></div></div><span class=\"pct-fill-text\">{Escape(pctStr)}</span></div>";
     }
 
     /// <summary>Renders a key-value grid (e.g. snapshot path, version, generated date).</summary>
