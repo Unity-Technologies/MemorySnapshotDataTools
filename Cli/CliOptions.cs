@@ -9,6 +9,7 @@ internal enum CommandKind
     Report,
     MultiReport,
     ValidateGolden,
+    Summary,
 }
 
 /// <summary>
@@ -30,6 +31,7 @@ internal sealed class CliOptions
     public string? MultiReportFilter { get; set; }
     public string GoldenPath { get; set; } = string.Empty;
     public string? ValidationOutputPath { get; set; }
+    public string SummaryInputPath { get; set; } = string.Empty;
     public int BatchSize { get; set; } = 2048;
     public int QueueCapacity { get; set; } = 256;
     public ValidationMode Validate { get; set; } = ValidationMode.Minimal;

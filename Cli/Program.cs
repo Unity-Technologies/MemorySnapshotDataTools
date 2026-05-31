@@ -10,7 +10,7 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
-        var root = CommandLineBuilder.Build(RunExport, RunBatchExport, RunReport, RunMultiReport, RunValidateGolden);
+        var root = CommandLineBuilder.Build(RunExport, RunBatchExport, RunReport, RunMultiReport, RunValidateGolden, RunSummary);
         return root.Parse(args).Invoke();
     }
 
@@ -109,6 +109,29 @@ internal static class Program
             Console.Error.WriteLine("Golden validation failed.");
             Console.Error.WriteLine(ex.Message);
             return 3;
+        }
+    }
+
+    private static int RunSummary(CliOptions options)
+    {
+        var progress = new ConsoleProgress(options.Verbose);
+        using var cts = CreateCancellationSource();
+
+        try
+        {
+            return SummaryReportRunner.Run(
+                new SummaryRunOptions
+                {
+                    InputPath = options.SummaryInputPath,
+                    Verbose = options.Verbose,
+                },
+                progress,
+                cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Error.WriteLine("Summary cancelled.");
+            return 2;
         }
     }
 

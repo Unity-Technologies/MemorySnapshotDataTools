@@ -13,7 +13,8 @@ internal static class CommandLineBuilder
         Func<CliOptions, int> runBatchExport,
         Func<CliOptions, int> runReport,
         Func<CliOptions, int> runMultiReport,
-        Func<CliOptions, int> runValidateGolden)
+        Func<CliOptions, int> runValidateGolden,
+        Func<CliOptions, int> runSummary)
     {
         var root = new RootCommand("Export Unity memory snapshots to DuckDB or SQLite and generate HTML reports.");
 
@@ -306,11 +307,47 @@ internal static class CommandLineBuilder
             return runValidateGolden(options);
         });
 
+        // ---- summary ----
+        var summaryCmd = new Command(
+            "summary",
+            "Print a high-level memory-usage summary for a snapshot or exported database (no database is generated).");
+        var summaryInputArg = new Argument<string>("input")
+        {
+            Description = "Path to a .snap snapshot or an exported .duckdb/.db database.",
+            Arity = ArgumentArity.ExactlyOne,
+        };
+        summaryCmd.Add(summaryInputArg);
+
+        var summaryVerboseOpt = new Option<bool>("--verbose")
+        {
+            Description = "Print progress while decoding a snapshot.",
+        };
+        summaryCmd.Add(summaryVerboseOpt);
+
+        summaryCmd.SetAction((ParseResult parseResult) =>
+        {
+            var inputPath = ExpandPath(parseResult.GetValue(summaryInputArg)!);
+            if (!File.Exists(inputPath))
+            {
+                Console.Error.WriteLine($"Input file not found: {inputPath}");
+                return 1;
+            }
+
+            var options = new CliOptions
+            {
+                Command = CommandKind.Summary,
+                SummaryInputPath = inputPath,
+                Verbose = parseResult.GetValue(summaryVerboseOpt),
+            };
+            return runSummary(options);
+        });
+
         root.Add(exportCmd);
         root.Add(batchExportCmd);
         root.Add(reportCmd);
         root.Add(multiReportCmd);
         root.Add(validateCmd);
+        root.Add(summaryCmd);
         return root;
     }
 
