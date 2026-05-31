@@ -49,6 +49,7 @@ public static class ExportPipeline
             Task.Run(() => ProduceNativeRoots(rawData.NativeRoots, queue, state, options.BatchSize, cts.Token), cts.Token),
             Task.Run(() => ProduceMemoryRegions(rawData.MemoryRegions, queue, state, options.BatchSize, cts.Token), cts.Token),
             Task.Run(() => ProduceNativeAllocations(rawData.NativeAllocations, queue, state, options.BatchSize, cts.Token), cts.Token),
+            Task.Run(() => ProduceSystemMemoryRegions(rawData.SystemMemoryRegions, queue, state, options.BatchSize, cts.Token), cts.Token),
             Task.Run(() => ProduceNativeObjects(rawData.NativeObjects, queue, state, options.BatchSize, cts.Token), cts.Token),
             Task.Run(() => ProduceManagedObjects(rawData.ManagedObjects, queue, state, options.BatchSize, cts.Token), cts.Token),
             Task.Run(() => ProduceConnections(rawData.Connections, queue, state, options.BatchSize, cts.Token), cts.Token),
@@ -68,6 +69,7 @@ public static class ExportPipeline
         counts.NativeRoots = rawData.NativeRoots.Count;
         counts.MemoryRegions = rawData.MemoryRegions.Count;
         counts.NativeAllocations = rawData.NativeAllocations.Count;
+        counts.SystemMemoryRegions = rawData.SystemMemoryRegions.Count;
         counts.MaterializeMs = materializeSw.ElapsedMilliseconds;
         counts.WriteMs = writeSw.ElapsedMilliseconds;
         counts.BackendInsertMs = writeStats.TotalInsertMs;
@@ -79,6 +81,7 @@ public static class ExportPipeline
         counts.NativeRootInsertMs = writeStats.NativeRootInsertMs;
         counts.MemoryRegionInsertMs = writeStats.MemoryRegionInsertMs;
         counts.NativeAllocationInsertMs = writeStats.NativeAllocationInsertMs;
+        counts.SystemMemoryRegionInsertMs = writeStats.SystemMemoryRegionInsertMs;
 
         if (state.MaterializedRows != rawData.TotalRows)
             throw new InvalidOperationException($"Materialized rows mismatch. expected={rawData.TotalRows}, actual={state.MaterializedRows}");
@@ -186,6 +189,19 @@ public static class ExportPipeline
             var buffer = new NativeAllocationRow[end - start];
             rows.CopyTo(start, buffer, 0, buffer.Length);
             queue.Add(WriteBatch.ForNativeAllocations(buffer), token);
+            state.IncrementQueuedBatches();
+            state.AddMaterialized(buffer.Length);
+        });
+    }
+
+    private static void ProduceSystemMemoryRegions(List<SystemMemoryRegionRow> rows, BlockingCollection<WriteBatch> queue, PipelineState state, int batchSize, CancellationToken token)
+    {
+        ProduceBatches(rows.Count, batchSize, token, start =>
+        {
+            var end = Math.Min(start + batchSize, rows.Count);
+            var buffer = new SystemMemoryRegionRow[end - start];
+            rows.CopyTo(start, buffer, 0, buffer.Length);
+            queue.Add(WriteBatch.ForSystemMemoryRegions(buffer), token);
             state.IncrementQueuedBatches();
             state.AddMaterialized(buffer.Length);
         });

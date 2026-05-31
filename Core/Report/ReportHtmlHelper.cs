@@ -69,6 +69,76 @@ internal static class ReportHtmlHelper
     public static bool IsPctCol(string col) =>
         PctCols.Contains(col.ToLowerInvariant()) || col.ToLowerInvariant().EndsWith("_pct", StringComparison.Ordinal);
 
+    /// <summary>Returns true for memory byte amount columns (allocated / resident), not counts.</summary>
+    public static bool IsByteAmountCol(string col)
+    {
+        var lower = col.ToLowerInvariant();
+        return (lower.Contains("allocated", StringComparison.Ordinal) || lower.Contains("resident", StringComparison.Ordinal))
+            && !lower.Contains("count", StringComparison.Ordinal);
+    }
+
+    /// <summary>Formats a byte count for display with an exact-byte tooltip.</summary>
+    public static string FmtBytesHtml(long bytes)
+    {
+        var exact = bytes.ToString("N0", CultureInfo.InvariantCulture) + " B";
+        var human = FormatBytesHuman(bytes);
+        return $"<span class=\"bytes\" title=\"{exact}\">{human}</span>";
+    }
+
+    /// <summary>Formats a byte amount cell value (long or N/A).</summary>
+    public static string FmtBytesCell(object? val)
+    {
+        if (val is string s && s.Equals("N/A", StringComparison.OrdinalIgnoreCase))
+            return "<em class=\"na\">N/A</em>";
+
+        if (TryInt64(val, out var bytes))
+            return FmtBytesHtml(bytes);
+
+        return Escape(val);
+    }
+
+    private static string FormatBytesHuman(long bytes)
+    {
+        if (bytes < 0)
+            bytes = 0;
+
+        const long kb = 1024;
+        const long mb = kb * 1024;
+        const long gb = mb * 1024;
+        const long tb = gb * 1024;
+
+        if (bytes < kb)
+            return $"{bytes} B";
+        if (bytes < mb)
+            return $"{(bytes / (double)kb):F2} KB";
+        if (bytes < gb)
+            return $"{(bytes / (double)mb):F2} MB";
+        if (bytes < tb)
+            return $"{(bytes / (double)gb):F2} GB";
+
+        return $"{(bytes / (double)tb):F2} TB";
+    }
+
+    private static bool TryInt64(object? o, out long value)
+    {
+        value = 0;
+        if (o is null)
+            return false;
+        if (o is long l)
+        {
+            value = l;
+            return true;
+        }
+
+        if (o is int i)
+        {
+            value = i;
+            return true;
+        }
+
+        return long.TryParse(o.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+    }
+
     /// <summary>Formats a cell value for the given column (percent, number, or escaped text).</summary>
     /// <param name="col">Column name (determines format).</param>
     /// <param name="val">Cell value.</param>
@@ -108,7 +178,7 @@ internal static class ReportHtmlHelper
         sb.Append("<div class=\"table-wrap\"><table class=\"sortable\"><thead><tr>");
         foreach (var c in columns)
         {
-            var numClass = IsNumericCol(c) ? " num" : "";
+            var numClass = IsNumericCol(c) || IsByteAmountCol(c) ? " num" : "";
             sb.Append($"<th class=\"{numClass.TrimStart()}\">{Escape(c)}</th>");
         }
         sb.Append("</tr></thead><tbody>");
@@ -120,7 +190,8 @@ internal static class ReportHtmlHelper
             {
                 var col = columns[i];
                 var val = i < row.Length ? row[i] : null;
-                var isNum = IsNumericCol(col);
+                var isByteAmount = IsByteAmountCol(col);
+                var isNum = IsNumericCol(col) || isByteAmount;
                 var isTrunc = truncateCols != null && truncateCols.Contains(col);
                 var isWarn = warnCol == col && val != null && TryDouble(val, out var v) && v > 0;
                 var classes = new List<string>();
@@ -128,8 +199,14 @@ internal static class ReportHtmlHelper
                 if (isTrunc) classes.Add("trunc");
                 if (isWarn) classes.Add("warn");
                 var cls = classes.Count > 0 ? " class=\"" + string.Join(" ", classes) + "\"" : "";
-                var title = isTrunc && val != null ? " title=\"" + Escape(val) + "\"" : "";
-                sb.Append($"<td{cls}{title}>{FmtCell(col, val)}</td>");
+                var title = isTrunc && val != null && !isByteAmount ? " title=\"" + Escape(val) + "\"" : "";
+                var sortAttr = isByteAmount && TryInt64(val, out var sortBytes)
+                    ? $" data-sort=\"{sortBytes.ToString(CultureInfo.InvariantCulture)}\""
+                    : isNum && TryInt64(val, out var sortNum)
+                        ? $" data-sort=\"{sortNum.ToString(CultureInfo.InvariantCulture)}\""
+                        : string.Empty;
+                var cellHtml = isByteAmount ? FmtBytesCell(val) : FmtCell(col, val);
+                sb.Append($"<td{cls}{title}{sortAttr}>{cellHtml}</td>");
             }
             sb.Append("</tr>");
         }

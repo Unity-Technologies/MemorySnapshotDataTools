@@ -21,6 +21,8 @@ internal enum SnapEntryType : ushort
 {
     Metadata_Version = 0,
     Metadata_RecordDate = 1,
+    Metadata_UserMetadata = 2,
+    Metadata_CaptureFlags = 3,
     Metadata_VirtualMachineInformation = 4,
     NativeTypes_Name = 5,
     NativeTypes_NativeBaseTypeArrayIndex = 6,
@@ -29,7 +31,9 @@ internal enum SnapEntryType : ushort
     NativeObjects_Flags = 9,
     NativeObjects_InstanceId = 10,
     NativeObjects_Name = 11,
+    NativeObjects_NativeObjectAddress = 12,
     NativeObjects_Size = 13,
+    NativeObjects_RootReferenceId = 14,
     GCHandles_Target = 15,
     Connections_From = 16,
     Connections_To = 17,
@@ -39,6 +43,7 @@ internal enum SnapEntryType : ushort
     TypeDescriptions_Name = 23,
     TypeDescriptions_Assembly = 24,
     TypeDescriptions_FieldIndices = 25,
+    TypeDescriptions_StaticFieldBytes = 26,
     TypeDescriptions_BaseOrElementTypeIndex = 27,
     TypeDescriptions_Size = 28,
     TypeDescriptions_TypeInfoAddress = 29,
@@ -51,6 +56,7 @@ internal enum SnapEntryType : ushort
     NativeRootReferences_ObjectName = 37,
     NativeRootReferences_AccumulatedSize = 38,
     NativeAllocations_MemoryRegionIndex = 39,
+    NativeAllocations_RootReferenceId = 40,
     NativeAllocations_Address = 42,
     NativeAllocations_Size = 43,
     NativeAllocations_OverheadSize = 44,
@@ -64,6 +70,18 @@ internal enum SnapEntryType : ushort
     NativeMemoryLabels_Name = 52,
     NativeObjects_GCHandleIndex = 58,
     NativeObjects_GCHandleIndex_Legacy = 62,
+    ProfileTarget_Info = 59,
+    ProfileTarget_MemoryStats = 60,
+    SystemMemoryRegions_Address = 83,
+    SystemMemoryRegions_Size = 84,
+    SystemMemoryRegions_Resident = 85,
+    SystemMemoryRegions_Type = 86,
+    SystemMemoryRegions_Name = 87,
+    SystemMemoryResidentPages_Address = 88,
+    SystemMemoryResidentPages_FirstPageIndex = 89,
+    SystemMemoryResidentPages_LastPageIndex = 90,
+    SystemMemoryResidentPages_PagesState = 91,
+    SystemMemoryResidentPages_PageSize = 92,
 }
 
 /// <summary>Format version constants used when decoding snapshot entries (e.g. instance IDs, heap sections).</summary>
@@ -77,6 +95,38 @@ internal static class SnapFormatVersion
 
     /// <summary>Version for memory label size and heap ID in heap section metadata.</summary>
     public const uint MemLabelSizeAndHeapIdVersion = 12;
+
+    /// <summary>Version at which OS system memory regions are present (entries 83–87).</summary>
+    public const uint SystemMemoryRegionsVersion = 16;
+
+    /// <summary>Version at which per-page resident bitmaps are present (entries 88–92).</summary>
+    public const uint SystemMemoryResidentPagesVersion = 17;
+}
+
+/// <summary>
+/// Type of a managed heap section, decoded from the high bit of its start address.
+/// Mirrors Unity Memory Profiler's <c>ManagedMemorySectionEntriesCache.MemorySectionType</c>.
+/// </summary>
+public enum ManagedHeapSectionKind : byte
+{
+    /// <summary>Garbage collector heap section (reported as "Empty Heap Space" in the summary).</summary>
+    GarbageCollector = 0,
+
+    /// <summary>Virtual machine heap section (reported as "Virtual Machine" in the summary).</summary>
+    VirtualMachine = 1,
+}
+
+/// <summary>
+/// Process-wide memory statistics reported by the profiling target (<c>ProfileTarget_MemoryStats</c>).
+/// Used by the summary builder for graphics estimation and the legacy untracked fallback.
+/// </summary>
+public sealed class DecodedTargetMemoryStats
+{
+    /// <summary>Total virtual memory committed by the process, as reported by the OS.</summary>
+    public ulong TotalVirtualMemory { get; set; }
+
+    /// <summary>Estimated graphics memory used, as reported by the graphics driver.</summary>
+    public ulong GraphicsUsedMemory { get; set; }
 }
 
 /// <summary>
@@ -116,6 +166,9 @@ public sealed class DecodedSnapshot
     /// <summary>Record date in .NET ticks (UTC).</summary>
     public long RecordDateTicksUtc { get; set; }
 
+    /// <summary>Session, platform, and Unity version from snapshot metadata entries.</summary>
+    public CaptureMetadata CaptureMetadata { get; set; } = new();
+
     /// <summary>Native type display names.</summary>
     public string[] NativeTypeNames { get; set; } = [];
 
@@ -130,6 +183,12 @@ public sealed class DecodedSnapshot
 
     /// <summary>Per-native-object size in bytes.</summary>
     public ulong[] NativeObjectSizes { get; set; } = [];
+
+    /// <summary>Per-native-object base address, or 0 when not present in the capture.</summary>
+    public ulong[] NativeObjectAddresses { get; set; } = [];
+
+    /// <summary>Per-native-object root reference ID linking to <see cref="NativeRootIds"/>, or -1.</summary>
+    public long[] NativeObjectRootReferenceIds { get; set; } = [];
 
     /// <summary>Per-native-object flags (e.g. destroyed).</summary>
     public int[] NativeObjectFlags { get; set; } = [];
@@ -194,14 +253,53 @@ public sealed class DecodedSnapshot
     /// <summary>Memory region index per allocation, or -1.</summary>
     public int[] NativeAllocationMemoryRegionIndices { get; set; } = [];
 
+    /// <summary>Root reference ID per allocation, or -1.</summary>
+    public long[] NativeAllocationRootReferenceIds { get; set; } = [];
+
+    /// <summary>OS system memory region base addresses (format v16+).</summary>
+    public ulong[] SystemMemoryRegionAddresses { get; set; } = [];
+
+    /// <summary>OS system memory region committed sizes in bytes (format v16+).</summary>
+    public ulong[] SystemMemoryRegionSizes { get; set; } = [];
+
+    /// <summary>OS system memory region resident sizes in bytes (format v16+).</summary>
+    public ulong[] SystemMemoryRegionResidentSizes { get; set; } = [];
+
+    /// <summary>OS system memory region type codes (format v16+).</summary>
+    public int[] SystemMemoryRegionTypes { get; set; } = [];
+
+    /// <summary>OS system memory region names (format v16+).</summary>
+    public string[] SystemMemoryRegionNames { get; set; } = [];
+
+    /// <summary>Resident-page range base addresses, one per system region (format v17+).</summary>
+    public ulong[] SystemMemoryResidentPageAddresses { get; set; } = [];
+
+    /// <summary>First page index in the global page bitmap per system region (format v17+).</summary>
+    public int[] SystemMemoryResidentPageFirstIndices { get; set; } = [];
+
+    /// <summary>Last page index in the global page bitmap per system region (format v17+).</summary>
+    public int[] SystemMemoryResidentPageLastIndices { get; set; } = [];
+
+    /// <summary>Global page residency bitmap bytes (format v17+); one element holds the full bitset.</summary>
+    public byte[][] SystemMemoryResidentPageStates { get; set; } = [];
+
+    /// <summary>Page size in bytes for resident page calculations (format v17+).</summary>
+    public ulong SystemMemoryResidentPageSize { get; set; }
+
     /// <summary>VM layout (pointer size, header offsets).</summary>
     public DecodedVirtualMachineInfo VirtualMachineInformation { get; set; } = new();
 
-    /// <summary>Start address of each managed heap section.</summary>
+    /// <summary>Start address of each managed heap section (high type-bit masked off).</summary>
     public ulong[] ManagedHeapSectionStartAddresses { get; set; } = [];
+
+    /// <summary>Type (VM vs GC) of each managed heap section, parallel to <see cref="ManagedHeapSectionStartAddresses"/>.</summary>
+    public ManagedHeapSectionKind[] ManagedHeapSectionTypes { get; set; } = [];
 
     /// <summary>Raw bytes of each managed heap section.</summary>
     public byte[][] ManagedHeapSectionBytes { get; set; } = [];
+
+    /// <summary>Process memory statistics from the capture target, or null when absent.</summary>
+    public DecodedTargetMemoryStats? TargetMemoryStats { get; set; }
 
     /// <summary>Managed type flags (value type, array, etc.).</summary>
     public int[] ManagedTypeFlags { get; set; } = [];
@@ -223,6 +321,9 @@ public sealed class DecodedSnapshot
 
     /// <summary>Per-type array of field description indices.</summary>
     public int[][] ManagedTypeFieldIndices { get; set; } = [];
+
+    /// <summary>Per-type static field byte blob (static field values), parallel to <see cref="ManagedTypeNames"/>; empty when absent.</summary>
+    public byte[][] ManagedTypeStaticFieldBytes { get; set; } = [];
 
     /// <summary>Field offset in bytes.</summary>
     public int[] FieldOffsets { get; set; } = [];

@@ -1,0 +1,8 @@
+{
+  "name": "com.unity.memory-snapshot-data-tools",
+  "version": "0.1.0",
+  "displayName": "Memory Snapshot Data Tools - Validation",
+  "description": "Editor tooling to extract golden memory metrics from the Unity Memory Profiler for validating MemorySnapshotDataTools exports.",
+  "unity": "2022.3",
+  "dependencies": { "com.unity.memoryprofiler": "1.1.12" }
+}

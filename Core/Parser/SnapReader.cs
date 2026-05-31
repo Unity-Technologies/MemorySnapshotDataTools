@@ -269,6 +269,58 @@ internal sealed class SnapReader : IDisposable
         return arr[0];
     }
 
+    /// <summary>
+    /// Reads the raw byte blob for a single-element entry, or the first element of a constant-size array.
+    /// </summary>
+    internal byte[] ReadSingleElementBytes(SnapEntryType entryType)
+    {
+        EnsureDefined(entryType);
+        var entry = _entries[(int)entryType];
+        if (entry.Format == SnapEntryFormat.SingleElement)
+            return ReadConstEntryBytes(entry, 0, 1);
+
+        if (entry.Format == SnapEntryFormat.ConstantSizeElementArray && entry.Count > 0)
+            return ReadConstEntryBytes(entry, 0, 1);
+
+        if (entry.Format == SnapEntryFormat.DynamicSizeElementArray && entry.Count > 0)
+        {
+            GetDynamicElementBounds(entry, 0, out var start, out var length);
+            return ReadBlockRange(_blocks[checked((int)entry.BlockIndex)], start, checked((int)length));
+        }
+
+        throw new InvalidOperationException($"Entry '{entryType}' cannot be read as a single blob.");
+    }
+
+    /// <summary>
+    /// Reads raw bytes for a contiguous range of constant-size elements (or the single-element blob).
+    /// Used for resident page bitmaps stored as one constant-size blob per entry.
+    /// </summary>
+    internal byte[] ReadConstantRangeBytes(SnapEntryType entryType, int startIndex, int count)
+    {
+        EnsureDefined(entryType);
+        var entry = _entries[(int)entryType];
+        return ReadConstEntryBytes(entry, startIndex, count);
+    }
+
+    /// <summary>
+    /// Reads up to <paramref name="byteCount"/> leading bytes of an entry's data block, starting at the
+    /// first element. Used for fixed-layout struct blobs (e.g. ProfileTarget_MemoryStats) whose stored
+    /// element size/count does not describe the full struct, mirroring Unity's <c>ReadUnsafe(..., sizeof(T), 0, 1)</c>.
+    /// </summary>
+    internal byte[] ReadEntryLeadingBytes(SnapEntryType entryType, int byteCount)
+    {
+        EnsureDefined(entryType);
+        var entry = _entries[(int)entryType];
+        if (entry.Format == SnapEntryFormat.DynamicSizeElementArray)
+            throw new InvalidOperationException($"Entry '{entryType}' is dynamic; use a dynamic read.");
+
+        var start = entry.Format == SnapEntryFormat.SingleElement ? checked((long)entry.HeaderMeta) : 0L;
+        var block = _blocks[checked((int)entry.BlockIndex)];
+        var available = checked((long)block.TotalBytes) - start;
+        var length = (int)Math.Max(0, Math.Min(byteCount, available));
+        return ReadBlockRange(block, start, length);
+    }
+
     private byte[] ReadConstEntryBytes(EntryData entry, int startIndex, int count)
     {
         if (entry.Format == SnapEntryFormat.SingleElement && startIndex == 0 && count == 1)

@@ -18,6 +18,7 @@ internal static class SnapSectionDecoders
     public static DecodedSnapshot DecodeAll(SnapReader reader)
     {
         var formatVersion = reader.ReadMetadataVersion();
+        var captureMetadata = SnapMetadataReader.Read(reader);
         var nativeObjectTypeIndices = ReadInts(reader, SnapEntryType.NativeObjects_NativeTypeArrayIndex);
         var nativeObjectCount = nativeObjectTypeIndices.Length;
         var nativeObjectInstanceIds = ReadInstanceIds(reader, formatVersion);
@@ -38,9 +39,12 @@ internal static class SnapSectionDecoders
         {
             FormatVersion = formatVersion,
             RecordDateTicksUtc = reader.ReadMetadataRecordDateTicks(),
+            CaptureMetadata = captureMetadata,
             NativeObjectTypeIndices = nativeObjectTypeIndices,
             NativeObjectInstanceIds = nativeObjectInstanceIds,
             NativeObjectSizes = ReadULongs(reader, SnapEntryType.NativeObjects_Size),
+            NativeObjectAddresses = ReadULongsWithCount(reader, SnapEntryType.NativeObjects_NativeObjectAddress, nativeObjectCount),
+            NativeObjectRootReferenceIds = ReadLongsWithCount(reader, SnapEntryType.NativeObjects_RootReferenceId, nativeObjectCount, -1),
             NativeObjectFlags = ReadIntsWithCount(reader, SnapEntryType.NativeObjects_Flags, nativeObjectCount, 0),
             NativeObjectGcHandleIndices = nativeObjectGcHandleIndices,
             GcHandleTargets = gcHandleTargets,
@@ -58,13 +62,17 @@ internal static class SnapSectionDecoders
             NativeAllocationOverheadSizes = ReadULongsWithCount(reader, SnapEntryType.NativeAllocations_OverheadSize, nativeAllocationCount),
             NativeAllocationPaddingSizes = ReadULongsWithCount(reader, SnapEntryType.NativeAllocations_PaddingSize, nativeAllocationCount),
             NativeAllocationMemoryRegionIndices = ReadIntsWithCount(reader, SnapEntryType.NativeAllocations_MemoryRegionIndex, nativeAllocationCount, -1),
+            NativeAllocationRootReferenceIds = ReadLongsWithCount(reader, SnapEntryType.NativeAllocations_RootReferenceId, nativeAllocationCount, -1),
             VirtualMachineInformation = ReadVirtualMachineInfo(reader),
             ManagedHeapSectionStartAddresses = ReadManagedHeapSectionStartAddresses(reader, formatVersion),
+            ManagedHeapSectionTypes = ReadManagedHeapSectionTypes(reader, formatVersion),
             ManagedHeapSectionBytes = ReadRequiredDynamicBytes(reader, SnapEntryType.ManagedHeapSections_Bytes),
+            TargetMemoryStats = ReadTargetMemoryStats(reader),
             ManagedTypeFlags = ReadRequiredInts(reader, SnapEntryType.TypeDescriptions_Flags),
             ManagedTypeNames = ReadRequiredStrings(reader, SnapEntryType.TypeDescriptions_Name),
             ManagedTypeAssemblies = ReadRequiredStrings(reader, SnapEntryType.TypeDescriptions_Assembly),
             ManagedTypeFieldIndices = ReadRequiredDynamicInts(reader, SnapEntryType.TypeDescriptions_FieldIndices),
+            ManagedTypeStaticFieldBytes = ReadOptionalDynamicBytes(reader, SnapEntryType.TypeDescriptions_StaticFieldBytes),
             ManagedTypeBaseOrElementTypeIndices = ReadRequiredInts(reader, SnapEntryType.TypeDescriptions_BaseOrElementTypeIndex),
             ManagedTypeSizes = ReadRequiredInts(reader, SnapEntryType.TypeDescriptions_Size),
             ManagedTypeInfoAddresses = ReadRequiredULongs(reader, SnapEntryType.TypeDescriptions_TypeInfoAddress),
@@ -81,6 +89,26 @@ internal static class SnapSectionDecoders
         snapshot.NativeMemoryRegionNames = ReadStringsWithCount(reader, SnapEntryType.NativeMemoryRegions_Name, snapshot.NativeMemoryRegionAddressBases.Length);
         snapshot.NativeMemoryLabelNames = ReadStrings(reader, SnapEntryType.NativeMemoryLabels_Name);
 
+        if (formatVersion >= SnapFormatVersion.SystemMemoryRegionsVersion)
+        {
+            snapshot.SystemMemoryRegionAddresses = ReadOptionalULongs(reader, SnapEntryType.SystemMemoryRegions_Address);
+            var systemRegionCount = snapshot.SystemMemoryRegionAddresses.Length;
+            snapshot.SystemMemoryRegionSizes = ReadULongsWithCount(reader, SnapEntryType.SystemMemoryRegions_Size, systemRegionCount);
+            snapshot.SystemMemoryRegionResidentSizes = ReadULongsWithCount(reader, SnapEntryType.SystemMemoryRegions_Resident, systemRegionCount);
+            snapshot.SystemMemoryRegionTypes = ReadSystemMemoryRegionTypes(reader, systemRegionCount);
+            snapshot.SystemMemoryRegionNames = ReadStringsWithCount(reader, SnapEntryType.SystemMemoryRegions_Name, systemRegionCount);
+        }
+
+        if (formatVersion >= SnapFormatVersion.SystemMemoryResidentPagesVersion)
+        {
+            snapshot.SystemMemoryResidentPageAddresses = ReadOptionalULongs(reader, SnapEntryType.SystemMemoryResidentPages_Address);
+            var residentPageRangeCount = snapshot.SystemMemoryResidentPageAddresses.Length;
+            snapshot.SystemMemoryResidentPageFirstIndices = ReadIntsWithCount(reader, SnapEntryType.SystemMemoryResidentPages_FirstPageIndex, residentPageRangeCount, 0);
+            snapshot.SystemMemoryResidentPageLastIndices = ReadIntsWithCount(reader, SnapEntryType.SystemMemoryResidentPages_LastPageIndex, residentPageRangeCount, 0);
+            snapshot.SystemMemoryResidentPageStates = ReadResidentPageStates(reader);
+            snapshot.SystemMemoryResidentPageSize = ReadResidentPageSize(reader);
+        }
+
         ValidateLengths(snapshot);
         return snapshot;
     }
@@ -96,6 +124,10 @@ internal static class SnapSectionDecoders
             EnsureArrayLength(nativeCount, snapshot.NativeObjectGcHandleIndices.Length, "NativeObjects_GCHandleIndex");
             if (snapshot.NativeObjectFlags.Length > 0)
                 EnsureArrayLength(nativeCount, snapshot.NativeObjectFlags.Length, "NativeObjects_Flags");
+            if (snapshot.NativeObjectAddresses.Length > 0)
+                EnsureArrayLength(nativeCount, snapshot.NativeObjectAddresses.Length, "NativeObjects_NativeObjectAddress");
+            if (snapshot.NativeObjectRootReferenceIds.Length > 0)
+                EnsureArrayLength(nativeCount, snapshot.NativeObjectRootReferenceIds.Length, "NativeObjects_RootReferenceId");
         }
 
         var rootsCount = snapshot.NativeRootIds.Length;
@@ -120,8 +152,29 @@ internal static class SnapSectionDecoders
         EnsureArrayLength(allocationCount, snapshot.NativeAllocationOverheadSizes.Length, "NativeAllocations_OverheadSize");
         EnsureArrayLength(allocationCount, snapshot.NativeAllocationPaddingSizes.Length, "NativeAllocations_PaddingSize");
         EnsureArrayLength(allocationCount, snapshot.NativeAllocationMemoryRegionIndices.Length, "NativeAllocations_MemoryRegionIndex");
+        if (snapshot.NativeAllocationRootReferenceIds.Length > 0)
+            EnsureArrayLength(allocationCount, snapshot.NativeAllocationRootReferenceIds.Length, "NativeAllocations_RootReferenceId");
+
+        var systemRegionCount = snapshot.SystemMemoryRegionAddresses.Length;
+        if (systemRegionCount > 0)
+        {
+            EnsureArrayLength(systemRegionCount, snapshot.SystemMemoryRegionSizes.Length, "SystemMemoryRegions_Size");
+            EnsureArrayLength(systemRegionCount, snapshot.SystemMemoryRegionResidentSizes.Length, "SystemMemoryRegions_Resident");
+            if (snapshot.SystemMemoryRegionTypes.Length > 0)
+                EnsureArrayLength(systemRegionCount, snapshot.SystemMemoryRegionTypes.Length, "SystemMemoryRegions_Type");
+            if (snapshot.SystemMemoryRegionNames.Length > 0)
+                EnsureArrayLength(systemRegionCount, snapshot.SystemMemoryRegionNames.Length, "SystemMemoryRegions_Name");
+        }
+
+        var residentPageCount = snapshot.SystemMemoryResidentPageAddresses.Length;
+        if (residentPageCount > 0)
+        {
+            EnsureArrayLength(residentPageCount, snapshot.SystemMemoryResidentPageFirstIndices.Length, "SystemMemoryResidentPages_FirstPageIndex");
+            EnsureArrayLength(residentPageCount, snapshot.SystemMemoryResidentPageLastIndices.Length, "SystemMemoryResidentPages_LastPageIndex");
+        }
 
         EnsureArrayLength(snapshot.ManagedHeapSectionStartAddresses.Length, snapshot.ManagedHeapSectionBytes.Length, "ManagedHeapSections_Bytes");
+        EnsureArrayLength(snapshot.ManagedHeapSectionStartAddresses.Length, snapshot.ManagedHeapSectionTypes.Length, "ManagedHeapSections_Type");
 
         var managedTypeCount = snapshot.ManagedTypeNames.Length;
         EnsureArrayLength(managedTypeCount, snapshot.ManagedTypeFlags.Length, "TypeDescriptions_Flags");
@@ -181,6 +234,46 @@ internal static class SnapSectionDecoders
     {
         EnsureEntryExists(reader, type);
         return reader.ReadPrimitiveArray<int>(type);
+    }
+
+    /// <summary>
+    /// Reads <c>SystemMemoryRegions_Type</c> as an int array. The values are serialized as <c>ushort</c>
+    /// (Unity's <c>MemoryType : ushort</c>); falls back to int then byte element sizes for other formats.
+    /// Reading with the wrong element size throws on a byte-size mismatch, which previously left every
+    /// region misclassified as Private/Untracked.
+    /// </summary>
+    private static int[] ReadSystemMemoryRegionTypes(SnapReader reader, int count)
+    {
+        if (!reader.HasEntry(SnapEntryType.SystemMemoryRegions_Type))
+            return count > 0 ? new int[count] : [];
+
+        try
+        {
+            var ushorts = reader.ReadPrimitiveArray<ushort>(SnapEntryType.SystemMemoryRegions_Type);
+            if (ushorts.Length == count)
+                return Array.ConvertAll(ushorts, v => (int)v);
+        }
+        catch
+        {
+            // Try other element widths below.
+        }
+
+        var ints = ReadOptionalInts(reader, SnapEntryType.SystemMemoryRegions_Type);
+        if (ints.Length == count)
+            return ints;
+
+        try
+        {
+            var bytes = reader.ReadPrimitiveArray<byte>(SnapEntryType.SystemMemoryRegions_Type);
+            if (bytes.Length == count)
+                return Array.ConvertAll(bytes, v => (int)v);
+        }
+        catch
+        {
+            // Fall through to zero-filled fallback.
+        }
+
+        return count > 0 ? new int[count] : [];
     }
 
     private static int[] ReadIntsWithCount(SnapReader reader, SnapEntryType type, int fallbackCount, int fallbackValue = 0)
@@ -268,6 +361,61 @@ internal static class SnapSectionDecoders
         for (var i = 0; i < starts.Length; i++)
             unmasked[i] = starts[i] & ~HeapSectionTypeFlagMask;
         return unmasked;
+    }
+
+    /// <summary>
+    /// Decodes each managed heap section's type from the high bit of its start address.
+    /// Set bit means a virtual machine section; cleared bit (or pre-v12 formats with no flag) means a GC section.
+    /// Mirrors Unity Memory Profiler's <c>ManagedMemorySectionEntriesCache</c>.
+    /// </summary>
+    private static ManagedHeapSectionKind[] ReadManagedHeapSectionTypes(SnapReader reader, uint formatVersion)
+    {
+        var starts = ReadRequiredULongs(reader, SnapEntryType.ManagedHeapSections_StartAddress);
+        var types = new ManagedHeapSectionKind[starts.Length];
+        if (formatVersion < SnapFormatVersion.MemLabelSizeAndHeapIdVersion)
+            return types;
+
+        for (var i = 0; i < starts.Length; i++)
+        {
+            types[i] = (starts[i] & HeapSectionTypeFlagMask) == HeapSectionTypeFlagMask
+                ? ManagedHeapSectionKind.VirtualMachine
+                : ManagedHeapSectionKind.GarbageCollector;
+        }
+
+        return types;
+    }
+
+    /// <summary>
+    /// Reads the <c>ProfileTarget_MemoryStats</c> blob (a single fixed-size struct) and extracts the
+    /// fields the summary builder needs. Returns null when the entry is absent or too small.
+    /// </summary>
+    private static DecodedTargetMemoryStats? ReadTargetMemoryStats(SnapReader reader)
+    {
+        if (!reader.HasEntry(SnapEntryType.ProfileTarget_MemoryStats))
+            return null;
+
+        byte[] bytes;
+        try
+        {
+            // The entry's stored element size/count does not describe the full struct, so read the leading
+            // struct bytes directly from the entry's block (mirrors Unity's ReadUnsafe(..., sizeof(struct), 0, 1)).
+            bytes = reader.ReadEntryLeadingBytes(SnapEntryType.ProfileTarget_MemoryStats, 40);
+        }
+        catch
+        {
+            return null;
+        }
+
+        // Sequential ulong fields: TotalVirtualMemory@0, TotalUsedMemory@8, TotalReservedMemory@16,
+        // TempAllocatorUsedMemory@24, GraphicsUsedMemory@32.
+        if (bytes.Length < 40)
+            return null;
+
+        return new DecodedTargetMemoryStats
+        {
+            TotalVirtualMemory = BitConverter.ToUInt64(bytes, 0),
+            GraphicsUsedMemory = BitConverter.ToUInt64(bytes, 32),
+        };
     }
 
     private static ulong[] ReadInstanceIds(SnapReader reader, uint formatVersion)
@@ -396,6 +544,105 @@ internal static class SnapSectionDecoders
 
     private static long[] ReadLongs(SnapReader reader, SnapEntryType type)
         => reader.HasEntry(type) ? reader.ReadPrimitiveArray<long>(type) : [];
+
+    private static long[] ReadLongsWithCount(SnapReader reader, SnapEntryType type, int fallbackCount, long fallbackValue = 0)
+    {
+        var values = ReadOptionalLongs(reader, type);
+        if (values.Length > 0)
+            return values;
+
+        return fallbackCount > 0 ? Enumerable.Repeat(fallbackValue, fallbackCount).ToArray() : [];
+    }
+
+    private static long[] ReadOptionalLongs(SnapReader reader, SnapEntryType type)
+    {
+        if (!reader.HasEntry(type))
+            return [];
+
+        try
+        {
+            return reader.ReadPrimitiveArray<long>(type);
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static ulong ReadResidentPageSize(SnapReader reader)
+    {
+        if (!reader.HasEntry(SnapEntryType.SystemMemoryResidentPages_PageSize))
+            return 0;
+
+        try
+        {
+            var uints = reader.ReadPrimitiveArray<uint>(SnapEntryType.SystemMemoryResidentPages_PageSize);
+            if (uints.Length > 0)
+                return uints[0];
+        }
+        catch
+        {
+            // Fall through to ulong read.
+        }
+
+        try
+        {
+            var ulongs = reader.ReadPrimitiveArray<ulong>(SnapEntryType.SystemMemoryResidentPages_PageSize);
+            if (ulongs.Length > 0)
+                return ulongs[0];
+        }
+        catch
+        {
+            // Entry missing or unsupported format.
+        }
+
+        return 0;
+    }
+
+    private static byte[][] ReadResidentPageStates(SnapReader reader)
+    {
+        if (!reader.HasEntry(SnapEntryType.SystemMemoryResidentPages_PagesState))
+            return [];
+
+        try
+        {
+            var dynamic = reader.ReadDynamicByteArrays(SnapEntryType.SystemMemoryResidentPages_PagesState);
+            if (dynamic.Length > 0 && dynamic[0].Length > 0)
+                return new[] { dynamic[0] };
+        }
+        catch
+        {
+            // Fall through to constant-size blob read.
+        }
+
+        try
+        {
+            var blob = reader.ReadConstantRangeBytes(SnapEntryType.SystemMemoryResidentPages_PagesState, 0, 1);
+            if (blob.Length > 0)
+                return new[] { blob };
+        }
+        catch
+        {
+            // Entry missing or unsupported format.
+        }
+
+        return [];
+    }
+
+    private static byte[][] ReadOptionalDynamicBytes(SnapReader reader, SnapEntryType type)
+    {
+        if (!reader.HasEntry(type))
+            return [];
+
+        try
+        {
+            return reader.ReadDynamicByteArrays(type);
+        }
+        catch
+        {
+            return [];
+        }
+    }
 
     private static ulong[] ReadULongs(SnapReader reader, SnapEntryType type)
         => reader.HasEntry(type) ? reader.ReadPrimitiveArray<ulong>(type) : [];

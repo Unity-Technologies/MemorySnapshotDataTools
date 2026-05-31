@@ -86,6 +86,8 @@ public sealed class SnapshotBridgeTests
         decoded.NativeObjectNames = ["MyGo"];
         decoded.NativeObjectSizes = [64UL];
         decoded.NativeObjectFlags = [0];
+        decoded.NativeObjectAddresses = [0UL];
+        decoded.NativeObjectRootReferenceIds = [-1L];
 
         var data = SnapshotBridge.ExtractFromDecoded(decoded, "/path/to/snap.snap");
 
@@ -94,6 +96,8 @@ public sealed class SnapshotBridgeTests
         Assert.Equal("42", row.InstanceId);
         Assert.Equal("MyGo", row.Name);
         Assert.Equal(64UL, row.SizeBytes);
+        Assert.Equal(0UL, row.NativeObjectAddress);
+        Assert.Null(row.ResidentSizeBytes);
         Assert.Equal(0, row.TypeIndex);
         Assert.Equal("GameObject", row.NativeTypeName);
         Assert.False(row.IsDestroyed);

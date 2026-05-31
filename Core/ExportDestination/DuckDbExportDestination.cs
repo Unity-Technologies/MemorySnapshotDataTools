@@ -47,10 +47,23 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
         // Insert snapshot_info using positional parameters (DuckDB uses ? placeholders)
         using (var cmd = connection.CreateCommand())
         {
-            cmd.CommandText = "INSERT INTO snapshot_info(snapshot_path, exported_at_utc, unity_version) VALUES (?, ?, ?);";
+            cmd.CommandText = """
+                INSERT INTO snapshot_info(
+                    snapshot_path, exported_at_utc, unity_version,
+                    snap_format_version, session_guid, product_name, platform, record_date_utc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """;
             cmd.Parameters.Add(new DuckDBParameter { Value = snapshotInfo.SnapshotPath });
             cmd.Parameters.Add(new DuckDBParameter { Value = snapshotInfo.ExportedAtUtc });
             cmd.Parameters.Add(new DuckDBParameter { Value = snapshotInfo.UnityVersion ?? (object)DBNull.Value });
+            cmd.Parameters.Add(new DuckDBParameter { Value = snapshotInfo.SnapFormatVersion == 0 ? (object)DBNull.Value : snapshotInfo.SnapFormatVersion });
+            cmd.Parameters.Add(new DuckDBParameter
+            {
+                Value = snapshotInfo.SessionGuid == 0 ? (object)DBNull.Value : unchecked((long)snapshotInfo.SessionGuid),
+            });
+            cmd.Parameters.Add(new DuckDBParameter { Value = string.IsNullOrEmpty(snapshotInfo.ProductName) ? (object)DBNull.Value : snapshotInfo.ProductName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = string.IsNullOrEmpty(snapshotInfo.Platform) ? (object)DBNull.Value : snapshotInfo.Platform });
+            cmd.Parameters.Add(new DuckDBParameter { Value = string.IsNullOrEmpty(snapshotInfo.RecordDateUtc) ? (object)DBNull.Value : snapshotInfo.RecordDateUtc });
             cmd.ExecuteNonQuery();
         }
         state.AddWritten(1);
@@ -64,6 +77,7 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
         using (var rootAppender = connection.CreateAppender("native_roots"))
         using (var regionAppender = connection.CreateAppender("memory_regions"))
         using (var allocationAppender = connection.CreateAppender("native_allocations"))
+        using (var systemRegionAppender = connection.CreateAppender("system_memory_regions"))
         {
             foreach (var batch in queue.GetConsumingEnumerable(token))
             {
@@ -76,15 +90,21 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                         foreach (var row in batch.NativeObjects)
                         {
                             // INTEGER columns get int, BIGINT columns get long (type must match exactly)
-                            nativeAppender.CreateRow()
-                                .AppendValue(row.NativeObjectIndex)           // int  → INTEGER
-                                .AppendValue(row.InstanceId ?? string.Empty)  // string → VARCHAR
-                                .AppendValue(row.Name ?? string.Empty)        // string → VARCHAR
-                                .AppendValue(unchecked((long)row.SizeBytes))  // ulong → BIGINT
-                                .AppendValue(row.TypeIndex)                   // int  → INTEGER
-                                .AppendValue(row.NativeTypeName ?? string.Empty) // string → VARCHAR
-                                .AppendValue(row.IsDestroyed)                 // bool → BOOLEAN
-                                .EndRow();
+                            var nativeRow = nativeAppender.CreateRow()
+                                .AppendValue(row.NativeObjectIndex)
+                                .AppendValue(row.InstanceId ?? string.Empty)
+                                .AppendValue(row.Name ?? string.Empty)
+                                .AppendValue(unchecked((long)row.SizeBytes))
+                                .AppendValue(unchecked((long)row.NativeObjectAddress))
+                                .AppendValue(row.RootReferenceId)
+                                .AppendValue(row.TypeIndex)
+                                .AppendValue(row.NativeTypeName ?? string.Empty)
+                                .AppendValue(row.IsDestroyed);
+                            if (row.ResidentSizeBytes.HasValue)
+                                nativeRow.AppendValue(unchecked((long)row.ResidentSizeBytes.Value));
+                            else
+                                nativeRow.AppendNullValue();
+                            nativeRow.EndRow();
                         }
                         nativeSw.Stop();
                         stats.NativeObjectRows += batch.NativeObjects.Length;
@@ -136,13 +156,17 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                         var rootSw = Stopwatch.StartNew();
                         foreach (var row in batch.NativeRoots)
                         {
-                            rootAppender.CreateRow()
-                                .AppendValue(row.RootIndex)                           // int  → INTEGER
-                                .AppendValue(row.RootId)                              // long → BIGINT
-                                .AppendValue(row.AreaName ?? string.Empty)            // VARCHAR
-                                .AppendValue(row.ObjectName ?? string.Empty)          // VARCHAR
-                                .AppendValue(unchecked((long)row.AccumulatedSizeBytes)) // ulong → BIGINT
-                                .EndRow();
+                            var rootRow = rootAppender.CreateRow()
+                                .AppendValue(row.RootIndex)
+                                .AppendValue(row.RootId)
+                                .AppendValue(row.AreaName ?? string.Empty)
+                                .AppendValue(row.ObjectName ?? string.Empty)
+                                .AppendValue(unchecked((long)row.AccumulatedSizeBytes));
+                            if (row.ResidentSizeBytes.HasValue)
+                                rootRow.AppendValue(unchecked((long)row.ResidentSizeBytes.Value));
+                            else
+                                rootRow.AppendNullValue();
+                            rootRow.EndRow();
                         }
                         rootSw.Stop();
                         stats.NativeRootRows += batch.NativeRoots.Length;
@@ -186,7 +210,11 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                                 .AppendValue(unchecked((long)row.OverheadSizeBytes))   // ulong → BIGINT
                                 .AppendValue(unchecked((long)row.PaddingSizeBytes));   // ulong → BIGINT
                             if (row.MemoryRegionIndex >= 0)
-                                r.AppendValue(row.MemoryRegionIndex);                  // int  → INTEGER
+                                r.AppendValue(row.MemoryRegionIndex);
+                            else
+                                r.AppendNullValue();
+                            if (row.RootReferenceId >= 0)
+                                r.AppendValue(row.RootReferenceId);
                             else
                                 r.AppendNullValue();
                             r.EndRow();
@@ -195,6 +223,25 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                         stats.NativeAllocationRows += batch.NativeAllocations.Length;
                         stats.NativeAllocationInsertMs += allocSw.ElapsedMilliseconds;
                         state.AddWritten(batch.NativeAllocations.Length);
+                        break;
+
+                    case WriteBatchKind.SystemMemoryRegions:
+                        var sysSw = Stopwatch.StartNew();
+                        foreach (var row in batch.SystemMemoryRegions)
+                        {
+                            systemRegionAppender.CreateRow()
+                                .AppendValue(row.RegionIndex)
+                                .AppendValue(unchecked((long)row.Address))
+                                .AppendValue(unchecked((long)row.SizeBytes))
+                                .AppendValue(unchecked((long)row.ResidentBytes))
+                                .AppendValue(row.Type)
+                                .AppendValue(row.Name ?? string.Empty)
+                                .EndRow();
+                        }
+                        sysSw.Stop();
+                        stats.SystemMemoryRegionRows += batch.SystemMemoryRegions.Length;
+                        stats.SystemMemoryRegionInsertMs += sysSw.ElapsedMilliseconds;
+                        state.AddWritten(batch.SystemMemoryRegions.Length);
                         break;
                 }
             }
@@ -211,6 +258,29 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
         stats.IndexBuildMs = indexSw.ElapsedMilliseconds;
 
         return stats;
+    }
+
+    #endregion
+
+    #region SummaryMetrics
+
+    /// <inheritdoc/>
+    public void WriteSummaryMetrics(string dbPath, SummaryMetrics metrics)
+    {
+        using var connection = new DuckDBConnection($"Data Source={dbPath}");
+        connection.Open();
+
+        using var appender = connection.CreateAppender("summary_metrics");
+        foreach (var (group, category, committed, resident, residentAvailable) in SummaryMetricsTable.Enumerate(metrics))
+        {
+            appender.CreateRow()
+                .AppendValue(group)
+                .AppendValue(category)
+                .AppendValue(unchecked((long)committed))
+                .AppendValue(unchecked((long)resident))
+                .AppendValue(residentAvailable ? 1 : 0)
+                .EndRow();
+        }
     }
 
     #endregion
@@ -232,21 +302,25 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
         var rootCount = QueryCount(connection, "SELECT COUNT(*) FROM native_roots;");
         var regionCount = QueryCount(connection, "SELECT COUNT(*) FROM memory_regions;");
         var allocationCount = QueryCount(connection, "SELECT COUNT(*) FROM native_allocations;");
+        var systemRegionCount = QueryCount(connection, "SELECT COUNT(*) FROM system_memory_regions;");
 
         if (nativeCount != rawData.NativeObjects.Count ||
             managedCount != rawData.ManagedObjects.Count ||
             connectionCount != rawData.Connections.Count ||
             rootCount != rawData.NativeRoots.Count ||
             regionCount != rawData.MemoryRegions.Count ||
-            allocationCount != rawData.NativeAllocations.Count)
+            allocationCount != rawData.NativeAllocations.Count ||
+            systemRegionCount != rawData.SystemMemoryRegions.Count)
         {
             throw new InvalidOperationException(
                 $"DuckDB validation count mismatch. " +
                 $"expected=(native={rawData.NativeObjects.Count}, managed={rawData.ManagedObjects.Count}, " +
                 $"connections={rawData.Connections.Count}, roots={rawData.NativeRoots.Count}, " +
-                $"regions={rawData.MemoryRegions.Count}, allocations={rawData.NativeAllocations.Count}) " +
+                $"regions={rawData.MemoryRegions.Count}, allocations={rawData.NativeAllocations.Count}, " +
+                $"system_regions={rawData.SystemMemoryRegions.Count}) " +
                 $"actual=(native={nativeCount}, managed={managedCount}, connections={connectionCount}, " +
-                $"roots={rootCount}, regions={regionCount}, allocations={allocationCount})");
+                $"roots={rootCount}, regions={regionCount}, allocations={allocationCount}, " +
+                $"system_regions={systemRegionCount})");
         }
 
         if (mode == ValidationMode.Full)
@@ -353,7 +427,12 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
 CREATE OR REPLACE TABLE snapshot_info (
     snapshot_path VARCHAR NOT NULL,
     exported_at_utc VARCHAR NOT NULL,
-    unity_version VARCHAR
+    unity_version VARCHAR,
+    snap_format_version INTEGER,
+    session_guid BIGINT,
+    product_name VARCHAR,
+    platform VARCHAR,
+    record_date_utc VARCHAR
 );
 
 CREATE OR REPLACE TABLE native_objects (
@@ -361,9 +440,12 @@ CREATE OR REPLACE TABLE native_objects (
     instance_id VARCHAR,
     name VARCHAR,
     size_bytes BIGINT NOT NULL,
+    native_object_address BIGINT NOT NULL DEFAULT 0,
+    root_reference_id BIGINT NOT NULL DEFAULT -1,
     type_index INTEGER,
     native_type_name VARCHAR,
-    is_destroyed BOOLEAN NOT NULL
+    is_destroyed BOOLEAN NOT NULL,
+    resident_size_bytes BIGINT
 );
 
 CREATE OR REPLACE TABLE managed_objects (
@@ -388,7 +470,8 @@ CREATE OR REPLACE TABLE native_roots (
     root_id BIGINT NOT NULL,
     area_name VARCHAR,
     object_name VARCHAR,
-    accumulated_size_bytes BIGINT NOT NULL
+    accumulated_size_bytes BIGINT NOT NULL,
+    resident_size_bytes BIGINT
 );
 
 CREATE OR REPLACE TABLE memory_regions (
@@ -407,7 +490,25 @@ CREATE OR REPLACE TABLE native_allocations (
     size_bytes BIGINT NOT NULL,
     overhead_size_bytes BIGINT NOT NULL,
     padding_size_bytes BIGINT NOT NULL,
-    memory_region_index INTEGER
+    memory_region_index INTEGER,
+    root_reference_id BIGINT
+);
+
+CREATE OR REPLACE TABLE system_memory_regions (
+    region_index INTEGER PRIMARY KEY,
+    address BIGINT NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    resident_bytes BIGINT NOT NULL,
+    type INTEGER NOT NULL,
+    name VARCHAR
+);
+
+CREATE OR REPLACE TABLE summary_metrics (
+    metric_group VARCHAR NOT NULL,
+    category VARCHAR NOT NULL,
+    committed_bytes BIGINT NOT NULL,
+    resident_bytes BIGINT NOT NULL,
+    resident_available INTEGER NOT NULL
 );
 """;
 
