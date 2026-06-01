@@ -7,11 +7,13 @@ internal sealed class SqliteReportQueries : IReportQueryBackend
 {
     private readonly SqliteConnection _connection;
 
-    /// <summary>Opens a connection to the SQLite database at the given path.</summary>
+    /// <summary>Opens a read-only connection to the SQLite database at the given path.</summary>
     /// <param name="dbPath">Path to the .db or .sqlite file.</param>
     public SqliteReportQueries(string dbPath)
     {
-        _connection = new SqliteConnection($"Data Source={dbPath}");
+        // The report path only ever runs SELECTs. Open read-only (least privilege) so that even a
+        // malformed query reaching ExecuteQuery cannot modify or drop data. See docs/sql-safety.md.
+        _connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
         _connection.Open();
     }
 
