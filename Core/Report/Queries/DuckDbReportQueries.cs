@@ -7,11 +7,13 @@ internal sealed class DuckDbReportQueries : IReportQueryBackend
 {
     private readonly DuckDBConnection _connection;
 
-    /// <summary>Opens a connection to the DuckDB database at the given path.</summary>
+    /// <summary>Opens a read-only connection to the DuckDB database at the given path.</summary>
     /// <param name="dbPath">Path to the .duckdb file.</param>
     public DuckDbReportQueries(string dbPath)
     {
-        _connection = new DuckDBConnection($"Data Source={dbPath}");
+        // The report path only ever runs SELECTs. Open read-only (least privilege) so that even a
+        // malformed query reaching ExecuteQuery cannot modify or drop data. See docs/sql-safety.md.
+        _connection = new DuckDBConnection($"Data Source={dbPath};ACCESS_MODE=READ_ONLY");
         _connection.Open();
     }
 
@@ -43,9 +45,14 @@ internal sealed class DuckDbReportQueries : IReportQueryBackend
     {
         try
         {
-            var (_, rows) = ExecuteQuery(
-                $"SELECT 1 FROM information_schema.columns WHERE table_schema = 'main' AND table_name = '{tableName.Replace("'", "''")}' AND column_name = '{columnName.Replace("'", "''")}' LIMIT 1");
-            return rows.Count > 0;
+            // Bind table/column names as parameters rather than interpolating them. information_schema.columns
+            // is a regular table, so it accepts bind parameters (DuckDB uses positional '?').
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText =
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ? AND column_name = ? LIMIT 1";
+            cmd.Parameters.Add(new DuckDBParameter { Value = tableName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = columnName });
+            return cmd.ExecuteScalar() != null;
         }
         catch
         {

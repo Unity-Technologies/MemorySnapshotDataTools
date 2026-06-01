@@ -20,7 +20,13 @@ internal interface IReportQueryBackend : IDisposable
     ReportBackendDialect Dialect { get; }
 
     /// <summary>Executes the given SQL and returns column names and rows (null for missing values).</summary>
-    /// <param name="sql">SQL query (single statement).</param>
+    /// <param name="sql">
+    /// SQL query (single statement). Must be an internally-constructed query — a constant from
+    /// <see cref="ReportSql"/> or one of its builders — never external/untrusted input. The only
+    /// dynamic value, <see cref="ReportSql.DownstreamStats"/>, interpolates a numeric <c>long</c>
+    /// index, which cannot carry a SQL-injection payload. As defense-in-depth, implementations open
+    /// the database read-only, so a malformed query here cannot modify or drop data.
+    /// </param>
     /// <returns>Column names and list of row arrays.</returns>
     (string[] Columns, List<object?[]> Rows) ExecuteQuery(string sql);
 

@@ -135,9 +135,10 @@ public static class SummaryReportRunner
     /// </summary>
     private static SummaryReport FromDatabase(string databasePath, string extension)
     {
+        // Read-only: the summary path only reads from the database. See docs/sql-safety.md.
         using DbConnection connection = extension.Equals(".db", StringComparison.OrdinalIgnoreCase)
-            ? new SqliteConnection($"Data Source={databasePath}")
-            : new DuckDBConnection($"Data Source={databasePath}");
+            ? new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly")
+            : new DuckDBConnection($"Data Source={databasePath};ACCESS_MODE=READ_ONLY");
         connection.Open();
 
         var info = ReadSnapshotInfo(connection);

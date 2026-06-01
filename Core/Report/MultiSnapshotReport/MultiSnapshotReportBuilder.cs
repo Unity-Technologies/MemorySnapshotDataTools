@@ -70,7 +70,8 @@ public static class MultiSnapshotReportBuilder
 
     private static SnapshotMetricsRow QueryDuckDb(string dbPath)
     {
-        using var connection = new DuckDBConnection($"Data Source={dbPath}");
+        // Read-only: this path only queries metrics, never writes. See docs/sql-safety.md.
+        using var connection = new DuckDBConnection($"Data Source={dbPath};ACCESS_MODE=READ_ONLY");
         connection.Open();
 
         var snapshotMeta = QuerySnapshotMetadata(connection, isDuckDb: true);
@@ -81,7 +82,8 @@ public static class MultiSnapshotReportBuilder
 
     private static SnapshotMetricsRow QuerySqlite(string dbPath)
     {
-        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        // Read-only: this path only queries metrics, never writes. See docs/sql-safety.md.
+        using var connection = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
         connection.Open();
 
         var snapshotMeta = QuerySnapshotMetadata(connection, isDuckDb: false);
@@ -112,12 +114,15 @@ public static class MultiSnapshotReportBuilder
             ? "COALESCE(SUM(resident_size_bytes), 0)"
             : nullResidentExpr;
 
+        // The resident expressions above are a closed set of hard-coded SQL fragments chosen by HasColumn;
+        // the native type name is a value, so it is bound as a parameter (DuckDB '?', SQLite '$nativeType').
+        var nativeTypeParam = isDuckDb ? "?" : "$nativeType";
         var assetBundleSql = $"""
             SELECT COUNT(*) AS obj_count,
                    COALESCE(SUM(size_bytes), 0) AS allocated_bytes,
                    {objectResidentExpr} AS resident_bytes
             FROM native_objects
-            WHERE native_type_name = '{GoldenValidationQueries.AssetBundleNativeTypeName}'
+            WHERE native_type_name = {nativeTypeParam}
               AND is_destroyed = false
             """;
 
@@ -129,26 +134,32 @@ public static class MultiSnapshotReportBuilder
             WHERE {GoldenValidationQueries.SerializedFileAreaPredicate}
             """;
 
-        ReadNativeTypeAggregate(connection, isDuckDb, assetBundleSql, GoldenValidationQueries.AssetBundleNativeTypeName, result);
+        ReadNativeTypeAggregate(connection, isDuckDb, assetBundleSql, GoldenValidationQueries.AssetBundleNativeTypeName, result,
+            ("$nativeType", GoldenValidationQueries.AssetBundleNativeTypeName));
         ReadNativeTypeAggregate(connection, isDuckDb, serializedFileSql, GoldenValidationQueries.SerializedFileMetricName, result);
         return result;
     }
 
+    // Table/column names are bound as parameters rather than interpolated, so this never builds SQL
+    // by concatenating identifiers. DuckDB queries information_schema.columns (a regular table that
+    // accepts bind parameters, matching DuckDbReportQueries.HasColumn); SQLite uses pragma_table_info
+    // with named parameters, matching SqliteReportQueries.HasColumn.
     private static bool HasColumn(object connection, bool isDuckDb, string tableName, string columnName)
     {
-        var sql = isDuckDb
-            ? $"SELECT 1 FROM pragma_table_info('{tableName}') WHERE name = '{columnName}' LIMIT 1"
-            : $"SELECT 1 FROM pragma_table_info('{tableName}') WHERE name = '{columnName}' LIMIT 1";
-
         if (isDuckDb)
         {
             using var cmd = ((DuckDBConnection)connection).CreateCommand();
-            cmd.CommandText = sql;
+            cmd.CommandText =
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ? AND column_name = ? LIMIT 1";
+            cmd.Parameters.Add(new DuckDBParameter { Value = tableName });
+            cmd.Parameters.Add(new DuckDBParameter { Value = columnName });
             return cmd.ExecuteScalar() != null;
         }
 
         using var sqliteCmd = ((SqliteConnection)connection).CreateCommand();
-        sqliteCmd.CommandText = sql;
+        sqliteCmd.CommandText = "SELECT 1 FROM pragma_table_info($t) WHERE name = $c LIMIT 1";
+        sqliteCmd.Parameters.AddWithValue("$t", tableName);
+        sqliteCmd.Parameters.AddWithValue("$c", columnName);
         return sqliteCmd.ExecuteScalar() != null;
     }
 
@@ -157,12 +168,16 @@ public static class MultiSnapshotReportBuilder
         bool isDuckDb,
         string sql,
         string typeName,
-        Dictionary<string, NativeTypeSnapshotMetrics> result)
+        Dictionary<string, NativeTypeSnapshotMetrics> result,
+        params (string Name, object Value)[] parameters)
     {
         if (isDuckDb)
         {
             using var cmd = ((DuckDBConnection)connection).CreateCommand();
             cmd.CommandText = sql;
+            // DuckDB binds positionally ('?'), in declaration order.
+            foreach (var (_, value) in parameters)
+                cmd.Parameters.Add(new DuckDBParameter { Value = value });
             using var reader = cmd.ExecuteReader();
             if (!reader.Read())
                 return;
@@ -179,6 +194,8 @@ public static class MultiSnapshotReportBuilder
 
         using var sqliteCmd = ((SqliteConnection)connection).CreateCommand();
         sqliteCmd.CommandText = sql;
+        foreach (var (name, value) in parameters)
+            sqliteCmd.Parameters.AddWithValue(name, value);
         using var sqliteReader = sqliteCmd.ExecuteReader();
         if (!sqliteReader.Read())
             return;
