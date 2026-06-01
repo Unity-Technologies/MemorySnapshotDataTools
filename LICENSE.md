@@ -1,4 +1,4 @@
-MemorySnapshotDataTool © 2026 Unity Technologies
+MemorySnapshotDataTools © 2026 Unity Technologies
 
 Licensed under the Unity Companion License for Unity-dependent projects (see https://unity3d.com/legal/licenses/unity_companion_license).
 

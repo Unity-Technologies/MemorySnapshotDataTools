@@ -1,6 +1,6 @@
 # Project guidance for Claude
 
-MemorySnapshotDataTool parses Unity memory snapshot (`.snap`) files and exports them to
+MemorySnapshotDataTools parses Unity memory snapshot (`.snap`) files and exports them to
 DuckDB / SQLite databases, then runs SQL to build HTML reports. Because the whole tool is
 built around composing and executing SQL, **SQL safety is a first-class rule in this repo.**
 

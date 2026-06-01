@@ -1,26 +1,31 @@
 ---
 name: memory-snapshot-report
-description: Generate and view Unity memory snapshot reports. Use when the user wants to analyze a Unity memory snapshot, export it to a database, or generate/view an HTML report.
+description: Generate and view Unity memory snapshot reports. Use when the user wants to analyze a Unity memory snapshot, export it to a database, validate an export against Unity golden values, or generate/view an HTML report.
 ---
 
 # Memory Snapshot Report
+
+This is the **analysis workflow** for the tool (export → validate → report, plus ad-hoc SQL).
+To build, launch, and **screenshot** the tool end-to-end from a clean checkout, use the
+`run-memory-snapshot-data-tool` skill and its driver.
 
 ## When to use
 
 - User wants to analyze a Unity memory snapshot (`.snap` file).
 - User wants to export a snapshot to a DuckDB or SQLite database.
 - User wants to generate or view an HTML report from an exported snapshot database.
+- User wants to validate an export against Unity golden values.
 
 ## Prerequisites
 
 - .NET 10 SDK.
-- Project path: **MemorySnapshotDataTools** is the project root; run commands from that directory.
+- Run commands from the **repo root** (the directory containing `MemorySnapshotDataTools.sln`).
 
 ## Steps
 
 ### 1. Export snapshot to database
 
-From the MemorySnapshotDataTools directory:
+From the repo root:
 
 ```bash
 dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- export <path/to/snapshot.snap> <path/to/output.duckdb> --validate minimal --verbose
@@ -45,9 +50,10 @@ dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- batch-export <dir
 
 ### 2. Validate export against Unity golden JSON
 
-The golden extractor lives in the `com.unity.memory-snapshot-data-tools` package under `UnityPackage/`
-in this repo, imported into U6TestBed via a local `file:` path in `Packages/manifest.json`. After extracting
-`*_golden.json` in Unity (**Tools → Memory Snapshot Validation → Extract Golden Values**):
+The golden extractor lives in the `com.unity.memory-snapshot-data-tools` package under
+`UnityPackage/` in this repo, imported into a Unity project via a local `file:` path in that
+project's `Packages/manifest.json`. After extracting `*_golden.json` in Unity
+(**Tools → Memory Snapshot Validation → Extract Golden Values**):
 
 ```bash
 dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- validate \
@@ -74,11 +80,14 @@ dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- report <path/to/o
 - Omit `--out` to write to a temp file and open in the browser.
 - Use `--title "My Report"` to set the report title.
 - Report works with either DuckDB or SQLite databases produced by the export command.
+  Prefer **DuckDB** — the SQLite report query is dramatically slower (seconds → minutes).
 
 ### 4. Optional
 
 - Open the generated HTML file or DB in the user’s preferred viewer.
-- For ad-hoc SQL, use the same DB path; tables include `snapshot_info`, `native_objects`, `managed_objects`, `connections`, `native_roots`, `memory_regions`, `native_allocations`, `system_memory_regions`, and `summary_metrics` (MemoryProfiler Summary-page breakdown).
+- For ad-hoc SQL, use the same DB path; tables are `snapshot_info`, `native_objects`,
+  `managed_objects`, `connections`, `native_roots`, `memory_regions`, `native_allocations`,
+  `system_memory_regions`, and `summary_metrics` (MemoryProfiler Summary-page breakdown).
 
 ## Domain
 
