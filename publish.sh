@@ -9,7 +9,7 @@ PUBLISH_DIR="$ROOT/publish"
 ARTIFACTS_DIR="$ROOT/artifacts"
 RIDS=(win-x64 linux-x64 osx-x64 osx-arm64)
 
-# Read version from csproj (e.g. <Version>0.1.0</Version>)
+# Read version from csproj (e.g. <Version>0.2.0</Version>)
 VERSION=$(grep -oE '<Version>[^<]+</Version>' "$PROJECT" | sed 's/<[^>]*>//g')
 if [[ -z "$VERSION" ]]; then
   echo "Could not read Version from $PROJECT"
