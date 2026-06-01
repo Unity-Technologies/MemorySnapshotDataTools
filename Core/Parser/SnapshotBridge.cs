@@ -37,23 +37,43 @@ public static class SnapshotBridge
     /// <returns>Validated <see cref="RawSnapshotData"/>.</returns>
     public static RawSnapshotData ExtractFromDecoded(DecodedSnapshot decoded, string snapshotPath)
     {
+        var captureMeta = decoded.CaptureMetadata;
+        var unityVersion = !string.IsNullOrWhiteSpace(captureMeta.UnityVersion)
+            ? captureMeta.UnityVersion
+            : $"format:{decoded.FormatVersion}";
+
         var data = new RawSnapshotData
         {
             SnapshotInfo = new SnapshotInfo
             {
                 SnapshotPath = snapshotPath,
                 ExportedAtUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
-                UnityVersion = $"format:{decoded.FormatVersion}",
+                UnityVersion = unityVersion,
+                SnapFormatVersion = decoded.FormatVersion,
+                SessionGuid = captureMeta.SessionGuid,
+                ProductName = captureMeta.ProductName ?? string.Empty,
+                Platform = captureMeta.Platform ?? string.Empty,
+                RecordDateUtc = decoded.RecordDateTicksUtc > 0
+                    ? new DateTime(decoded.RecordDateTicksUtc, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture)
+                    : string.Empty,
             }
         };
 
         ExtractNativeRoots(decoded, data.NativeRoots);
         ExtractMemoryRegions(decoded, data.MemoryRegions);
         ExtractNativeAllocations(decoded, data.NativeAllocations);
-        ExtractNativeObjects(decoded, data.NativeObjects);
+        ExtractSystemMemoryRegions(decoded, data.SystemMemoryRegions);
+
+        var hasResident = ResidentMemoryCalculator.HasPerObjectResident(decoded);
+        var (rootResidentSizes, _) = MemoryMapResidentAggregator.Compute(decoded);
+        var rootIdToIndex = BuildRootIdToIndex(decoded);
+
+        ExtractNativeObjects(decoded, data.NativeObjects, rootResidentSizes, rootIdToIndex, hasResident);
+        ApplyRootResidentSizes(data.NativeRoots, rootResidentSizes, hasResident);
         var managedCrawl = ManagedSnapshotCrawler.Crawl(decoded);
         data.ManagedObjects.AddRange(managedCrawl.ManagedObjects);
         ExtractConnections(decoded, managedCrawl.ManagedConnections, data.Connections);
+        data.SummaryMetrics = SummaryMetricsCalculator.Compute(decoded, data.ManagedObjects);
         ValidateStrictInMemory(data);
         return data;
     }
@@ -74,23 +94,82 @@ public static class SnapshotBridge
         }
     }
 
-    private static void ExtractNativeObjects(DecodedSnapshot decoded, List<NativeObjectRow> output)
+    private static Dictionary<long, int> BuildRootIdToIndex(DecodedSnapshot decoded)
+    {
+        var map = new Dictionary<long, int>(decoded.NativeRootIds.Length);
+        for (var i = 0; i < decoded.NativeRootIds.Length; i++)
+            map[decoded.NativeRootIds[i]] = i;
+        return map;
+    }
+
+    private static void ExtractNativeObjects(
+        DecodedSnapshot decoded,
+        List<NativeObjectRow> output,
+        ulong[] rootResidentSizes,
+        Dictionary<long, int> rootIdToIndex,
+        bool hasResident)
     {
         output.Capacity = decoded.NativeObjectNames.Length;
         for (var i = 0; i < decoded.NativeObjectNames.Length; i++)
         {
             var typeIndex = decoded.NativeObjectTypeIndices[i];
+            var address = i < decoded.NativeObjectAddresses.Length ? decoded.NativeObjectAddresses[i] : 0UL;
+            var rootReferenceId = i < decoded.NativeObjectRootReferenceIds.Length
+                ? decoded.NativeObjectRootReferenceIds[i]
+                : -1L;
+            ulong? residentSizeBytes = null;
+            if (hasResident &&
+                rootReferenceId >= 1 &&
+                rootIdToIndex.TryGetValue(rootReferenceId, out var rootIndex) &&
+                rootIndex < rootResidentSizes.Length)
+            {
+                residentSizeBytes = rootResidentSizes[rootIndex];
+            }
+
             output.Add(new NativeObjectRow
             {
                 NativeObjectIndex = i,
                 InstanceId = decoded.NativeObjectInstanceIds[i].ToString(CultureInfo.InvariantCulture),
                 Name = decoded.NativeObjectNames[i] ?? string.Empty,
                 SizeBytes = decoded.NativeObjectSizes[i],
+                NativeObjectAddress = address,
+                RootReferenceId = rootReferenceId,
+                ResidentSizeBytes = residentSizeBytes,
                 TypeIndex = typeIndex,
                 NativeTypeName = typeIndex >= 0 && typeIndex < decoded.NativeTypeNames.Length
                     ? decoded.NativeTypeNames[typeIndex] ?? string.Empty
                     : string.Empty,
                 IsDestroyed = i < decoded.NativeObjectFlags.Length && (decoded.NativeObjectFlags[i] & 0x8) != 0,
+            });
+        }
+    }
+
+    private static void ApplyRootResidentSizes(List<NativeRootRow> roots, ulong[] rootResidentSizes, bool hasResident)
+    {
+        if (!hasResident)
+            return;
+
+        for (var i = 0; i < roots.Count; i++)
+        {
+            var row = roots[i];
+            row.ResidentSizeBytes = i < rootResidentSizes.Length ? rootResidentSizes[i] : 0UL;
+            roots[i] = row;
+        }
+    }
+
+    private static void ExtractSystemMemoryRegions(DecodedSnapshot decoded, List<SystemMemoryRegionRow> output)
+    {
+        output.Capacity = decoded.SystemMemoryRegionAddresses.Length;
+        for (var i = 0; i < decoded.SystemMemoryRegionAddresses.Length; i++)
+        {
+            output.Add(new SystemMemoryRegionRow
+            {
+                RegionIndex = i,
+                Address = decoded.SystemMemoryRegionAddresses[i],
+                SizeBytes = i < decoded.SystemMemoryRegionSizes.Length ? decoded.SystemMemoryRegionSizes[i] : 0,
+                ResidentBytes = i < decoded.SystemMemoryRegionResidentSizes.Length ? decoded.SystemMemoryRegionResidentSizes[i] : 0,
+                Type = i < decoded.SystemMemoryRegionTypes.Length ? decoded.SystemMemoryRegionTypes[i] : 0,
+                Name = i < decoded.SystemMemoryRegionNames.Length ? decoded.SystemMemoryRegionNames[i] ?? string.Empty : string.Empty,
             });
         }
     }
@@ -126,6 +205,9 @@ public static class SnapshotBridge
                 OverheadSizeBytes = decoded.NativeAllocationOverheadSizes[i],
                 PaddingSizeBytes = decoded.NativeAllocationPaddingSizes[i],
                 MemoryRegionIndex = decoded.NativeAllocationMemoryRegionIndices[i],
+                RootReferenceId = i < decoded.NativeAllocationRootReferenceIds.Length
+                    ? decoded.NativeAllocationRootReferenceIds[i]
+                    : -1,
             });
         }
     }

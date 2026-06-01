@@ -1,0 +1,7 @@
+{
+  "name": "MemorySnapshotDataTools.Validation.Editor",
+  "rootNamespace": "",
+  "references": ["MemorySnapshotDataTools.Validation", "Unity.MemoryProfiler.Editor"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

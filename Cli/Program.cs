@@ -1,9 +1,8 @@
-using System.Diagnostics;
 using MemorySnapshotDataTools;
 using MemorySnapshotDataTools.Export;
-using MemorySnapshotDataTools.ExportDestination;
-using MemorySnapshotDataTools.Parser;
 using MemorySnapshotDataTools.Report;
+using MemorySnapshotDataTools.Report.MultiSnapshotReport;
+using MemorySnapshotDataTools.Validation;
 
 namespace MemorySnapshotDataTools.Cli;
 
@@ -11,78 +10,63 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
-        var root = CommandLineBuilder.Build(RunExport, RunReport);
+        var root = CommandLineBuilder.Build(RunExport, RunBatchExport, RunReport, RunMultiReport, RunValidateGolden, RunSummary);
         return root.Parse(args).Invoke();
     }
 
     private static int RunExport(CliOptions options)
     {
-        var destination = ExportDestinationFactory.Create(options.Destination);
         var progress = new ConsoleProgress(options.Verbose);
-        progress.Report($"Backend: {destination.DestinationName}", force: true);
-
-        using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, e) =>
-        {
-            e.Cancel = true;
-            cts.Cancel();
-        };
+        using var cts = CreateCancellationSource();
 
         try
         {
-            var sw = Stopwatch.StartNew();
-
-            var exportOptions = new ExportRunOptions
-            {
-                OutputDbPath = options.OutputDbPath,
-                BatchSize = options.BatchSize,
-                QueueCapacity = options.QueueCapacity,
-                Validate = options.Validate,
-            };
-
-            var extractSw = Stopwatch.StartNew();
-            var rawData = RunStage("snapshot-extract", progress, () => SnapshotBridge.ExtractRawData(options.SnapshotPath, progress, cts.Token));
-            extractSw.Stop();
-
-            var pipelineSw = Stopwatch.StartNew();
-            var counts = RunStage("pipeline-write", progress, () => ExportPipeline.Run(exportOptions, rawData, destination, progress, cts.Token));
-            pipelineSw.Stop();
-
-            var validationSw = Stopwatch.StartNew();
-            RunStage("validation", progress, () => destination.Validate(options.OutputDbPath, rawData, options.Validate));
-            validationSw.Stop();
-
-            counts.TotalMs = sw.ElapsedMilliseconds;
-            var pipelineRps = pipelineSw.ElapsedMilliseconds > 0
-                ? rawData.TotalRows * 1000.0 / pipelineSw.ElapsedMilliseconds
-                : 0.0;
-
-            progress.Report(
-                $"Done. backend={destination.DestinationName}, native_objects={counts.NativeObjects}, managed_objects={counts.ManagedObjects}, connections={counts.Connections}, native_roots={counts.NativeRoots}, " +
-                $"memory_regions={counts.MemoryRegions}, native_allocations={counts.NativeAllocations}, " +
-                $"extract_ms={extractSw.ElapsedMilliseconds}, pipeline_ms={pipelineSw.ElapsedMilliseconds}, validation_ms={validationSw.ElapsedMilliseconds}, total_ms={counts.TotalMs}, " +
-                $"pipeline_rps={pipelineRps:N0}, backend_insert_ms={counts.BackendInsertMs}, backend_commit_ms={counts.BackendCommitMs}, backend_index_ms={counts.BackendIndexBuildMs}, " +
-                $"insert_ms_by_table(native={counts.NativeObjectInsertMs}, managed={counts.ManagedObjectInsertMs}, connections={counts.ConnectionInsertMs}, roots={counts.NativeRootInsertMs}, regions={counts.MemoryRegionInsertMs}, allocations={counts.NativeAllocationInsertMs})");
-            return 0;
+            return ExportRunner.Run(
+                options.SnapshotPath,
+                options.OutputDbPath,
+                new ExportRunOptions
+                {
+                    BatchSize = options.BatchSize,
+                    QueueCapacity = options.QueueCapacity,
+                    Validate = options.Validate,
+                },
+                options.Destination,
+                progress,
+                cts.Token);
         }
         catch (OperationCanceledException)
         {
             Console.Error.WriteLine("Export cancelled.");
             return 2;
         }
-        catch (Exception ex)
+    }
+
+    private static int RunBatchExport(CliOptions options)
+    {
+        var progress = new ConsoleProgress(options.Verbose);
+        using var cts = CreateCancellationSource();
+
+        try
         {
-            Console.Error.WriteLine("Export failed.");
-            if (ex is ExportStageException stageEx)
-            {
-                Console.Error.WriteLine($"Failure stage: {stageEx.Stage}");
-                Console.Error.WriteLine(stageEx.InnerException ?? stageEx);
-            }
-            else
-            {
-                Console.Error.WriteLine(ex);
-            }
-            return 3;
+            return BatchExportRunner.Run(
+                new BatchExportRunOptions
+                {
+                    Directory = options.BatchExportDirectory,
+                    NameFilter = options.BatchExportFilter,
+                    Destination = options.Destination,
+                    BatchSize = options.BatchSize,
+                    QueueCapacity = options.QueueCapacity,
+                    Validate = options.Validate,
+                    SkipExisting = options.SkipExisting,
+                    ContinueOnError = options.ContinueOnError,
+                },
+                progress,
+                cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Error.WriteLine("Batch export cancelled.");
+            return 2;
         }
     }
 
@@ -98,29 +82,67 @@ internal static class Program
         return ReportRunner.Run(reportOptions, progress);
     }
 
-    private static void RunStage(string stage, ConsoleProgress progress, Action action)
+    private static int RunMultiReport(CliOptions options)
     {
-        progress.Report($"[{stage}] start", force: true);
+        var multiOptions = new MultiSnapshotReportRunOptions
+        {
+            Directory = options.MultiReportDirectory,
+            NameFilter = options.MultiReportFilter,
+            ReportOutputPath = options.ReportOutputPath,
+            ReportTitle = options.ReportTitle,
+        };
+        var progress = new ConsoleProgress(options.Verbose);
+        return MultiSnapshotReportRunner.Run(multiOptions, progress);
+    }
+
+    private static int RunValidateGolden(CliOptions options)
+    {
         try
         {
-            action();
+            return GoldenValidationRunner.ValidateAndWriteResult(
+                options.GoldenPath,
+                options.ReportDbPath,
+                options.ValidationOutputPath);
         }
-        catch (Exception ex) when (ex is not ExportStageException)
+        catch (Exception ex)
         {
-            throw new ExportStageException(stage, ex);
+            Console.Error.WriteLine("Golden validation failed.");
+            Console.Error.WriteLine(ex.Message);
+            return 3;
         }
     }
 
-    private static T RunStage<T>(string stage, ConsoleProgress progress, Func<T> action)
+    private static int RunSummary(CliOptions options)
     {
-        progress.Report($"[{stage}] start", force: true);
+        var progress = new ConsoleProgress(options.Verbose);
+        using var cts = CreateCancellationSource();
+
         try
         {
-            return action();
+            return SummaryReportRunner.Run(
+                new SummaryRunOptions
+                {
+                    InputPath = options.SummaryInputPath,
+                    Verbose = options.Verbose,
+                },
+                progress,
+                cts.Token);
         }
-        catch (Exception ex) when (ex is not ExportStageException)
+        catch (OperationCanceledException)
         {
-            throw new ExportStageException(stage, ex);
+            Console.Error.WriteLine("Summary cancelled.");
+            return 2;
         }
+    }
+
+    private static CancellationTokenSource CreateCancellationSource()
+    {
+        var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+        return cts;
     }
 }

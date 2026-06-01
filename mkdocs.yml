@@ -12,6 +12,7 @@ nav:
   - About TechDocs: "index.md"
   - Introduction to cse-memory-snapshot-data-tool: "intro.md"
   - Architecture and design: "design.md"
+  - Snap File Format: "snap-file-format.md"
   - Installing for local development: "installation.md"
   - Troubleshooting: "troubleshooting.md"
   - Runbook: "runbook.md"

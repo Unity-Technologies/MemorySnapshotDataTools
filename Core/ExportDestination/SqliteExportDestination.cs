@@ -21,6 +21,10 @@ internal sealed class SqliteExportDestination : IExportDestinationWriter
         => SqliteWriter.ConsumeAndWrite(dbPath, snapshotInfo, queue, state, token);
 
     /// <inheritdoc/>
+    public void WriteSummaryMetrics(string dbPath, SummaryMetrics metrics)
+        => SqliteWriter.WriteSummaryMetrics(dbPath, metrics);
+
+    /// <inheritdoc/>
     public void Validate(string dbPath, RawSnapshotData rawData, ValidationMode mode)
         => SqliteWriter.Validate(dbPath, rawData, mode);
 }

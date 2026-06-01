@@ -14,8 +14,21 @@ public struct NativeObjectRow
     /// <summary>Display name.</summary>
     public string Name;
 
-    /// <summary>Size in bytes.</summary>
+    /// <summary>Size in bytes (allocated / committed).</summary>
     public ulong SizeBytes;
+
+    /// <summary>Native object base address from the snapshot.</summary>
+    public ulong NativeObjectAddress;
+
+    /// <summary>Native root reference id linking this object to <c>native_roots</c>, or -1 when unknown.</summary>
+    public long RootReferenceId;
+
+    /// <summary>
+    /// Resident size in bytes for the object's native root (allocations and object ranges under the same
+    /// <see cref="RootReferenceId"/>), matching Unity Memory Profiler processed-root totals; null when not
+    /// computable (format &lt; 17) or when <see cref="RootReferenceId"/> is unknown.
+    /// </summary>
+    public ulong? ResidentSizeBytes;
 
     /// <summary>Index into the native type names array.</summary>
     public int TypeIndex;
@@ -89,8 +102,11 @@ public struct NativeRootRow
     /// <summary>Object name for the root.</summary>
     public string ObjectName;
 
-    /// <summary>Accumulated size in bytes for this root.</summary>
+    /// <summary>Accumulated size in bytes for this root (allocated).</summary>
     public ulong AccumulatedSizeBytes;
+
+    /// <summary>Resident size in bytes aggregated from rooted objects and allocations, or null when not computable.</summary>
+    public ulong? ResidentSizeBytes;
 }
 
 /// <summary>
@@ -142,4 +158,31 @@ public struct NativeAllocationRow
 
     /// <summary>Containing memory region index, or -1.</summary>
     public int MemoryRegionIndex;
+
+    /// <summary>Root reference ID linking to <c>native_roots</c>, or -1.</summary>
+    public long RootReferenceId;
+}
+
+/// <summary>
+/// One row from the <c>system_memory_regions</c> table: an OS-level memory region with committed and resident totals.
+/// </summary>
+public struct SystemMemoryRegionRow
+{
+    /// <summary>Zero-based region index.</summary>
+    public int RegionIndex;
+
+    /// <summary>Region base address.</summary>
+    public ulong Address;
+
+    /// <summary>Committed (allocated) size in bytes for the region.</summary>
+    public ulong SizeBytes;
+
+    /// <summary>Resident size in bytes for the region.</summary>
+    public ulong ResidentBytes;
+
+    /// <summary>Region type code from the snapshot.</summary>
+    public int Type;
+
+    /// <summary>Region name.</summary>
+    public string Name;
 }

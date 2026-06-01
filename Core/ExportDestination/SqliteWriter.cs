@@ -40,13 +40,15 @@ internal static class SqliteWriter
         var rootCount = QueryCount(connection, "SELECT COUNT(*) FROM native_roots;");
         var regionCount = QueryCount(connection, "SELECT COUNT(*) FROM memory_regions;");
         var allocationCount = QueryCount(connection, "SELECT COUNT(*) FROM native_allocations;");
+        var systemRegionCount = QueryCount(connection, "SELECT COUNT(*) FROM system_memory_regions;");
 
         if (nativeCount != rawData.NativeObjects.Count ||
             managedCount != rawData.ManagedObjects.Count ||
             connectionCount != rawData.Connections.Count ||
             rootCount != rawData.NativeRoots.Count ||
             regionCount != rawData.MemoryRegions.Count ||
-            allocationCount != rawData.NativeAllocations.Count)
+            allocationCount != rawData.NativeAllocations.Count ||
+            systemRegionCount != rawData.SystemMemoryRegions.Count)
         {
             throw new InvalidOperationException("SQLite validation count mismatch between extracted rows and persisted rows.");
         }
@@ -135,6 +137,44 @@ internal static class SqliteWriter
 
     #endregion
 
+    #region SummaryMetrics
+
+    /// <summary>
+    /// Inserts the MemoryProfiler summary metrics into the <c>summary_metrics</c> table (created by the schema script).
+    /// </summary>
+    public static void WriteSummaryMetrics(string dbPath, SummaryMetrics metrics)
+    {
+        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.Open();
+
+        using var transaction = connection.BeginTransaction();
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = """
+            INSERT INTO summary_metrics(metric_group, category, committed_bytes, resident_bytes, resident_available)
+            VALUES ($g, $c, $cb, $rb, $ra);
+            """;
+        var g = cmd.Parameters.Add("$g", Microsoft.Data.Sqlite.SqliteType.Text);
+        var c = cmd.Parameters.Add("$c", Microsoft.Data.Sqlite.SqliteType.Text);
+        var cb = cmd.Parameters.Add("$cb", Microsoft.Data.Sqlite.SqliteType.Integer);
+        var rb = cmd.Parameters.Add("$rb", Microsoft.Data.Sqlite.SqliteType.Integer);
+        var ra = cmd.Parameters.Add("$ra", Microsoft.Data.Sqlite.SqliteType.Integer);
+
+        foreach (var (group, category, committed, resident, residentAvailable) in SummaryMetricsTable.Enumerate(metrics))
+        {
+            g.Value = group;
+            c.Value = category;
+            cb.Value = unchecked((long)committed);
+            rb.Value = unchecked((long)resident);
+            ra.Value = residentAvailable ? 1 : 0;
+            cmd.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    #endregion
+
     #region ConsumeAndWrite
 
     /// <summary>
@@ -174,10 +214,20 @@ internal static class SqliteWriter
 
             using var snapshotCmd = connection.CreateCommand();
             snapshotCmd.Transaction = transaction;
-            snapshotCmd.CommandText = "INSERT INTO snapshot_info(snapshot_path, exported_at_utc, unity_version) VALUES ($p, $e, $u);";
+            snapshotCmd.CommandText = """
+                INSERT INTO snapshot_info(
+                    snapshot_path, exported_at_utc, unity_version,
+                    snap_format_version, session_guid, product_name, platform, record_date_utc)
+                VALUES ($p, $e, $u, $sf, $sg, $pn, $pl, $rd);
+                """;
             snapshotCmd.Parameters.AddWithValue("$p", snapshotInfo.SnapshotPath);
             snapshotCmd.Parameters.AddWithValue("$e", snapshotInfo.ExportedAtUtc);
             snapshotCmd.Parameters.AddWithValue("$u", snapshotInfo.UnityVersion);
+            snapshotCmd.Parameters.AddWithValue("$sf", snapshotInfo.SnapFormatVersion == 0 ? DBNull.Value : snapshotInfo.SnapFormatVersion);
+            snapshotCmd.Parameters.AddWithValue("$sg", snapshotInfo.SessionGuid == 0 ? DBNull.Value : unchecked((long)snapshotInfo.SessionGuid));
+            snapshotCmd.Parameters.AddWithValue("$pn", string.IsNullOrEmpty(snapshotInfo.ProductName) ? DBNull.Value : snapshotInfo.ProductName);
+            snapshotCmd.Parameters.AddWithValue("$pl", string.IsNullOrEmpty(snapshotInfo.Platform) ? DBNull.Value : snapshotInfo.Platform);
+            snapshotCmd.Parameters.AddWithValue("$rd", string.IsNullOrEmpty(snapshotInfo.RecordDateUtc) ? DBNull.Value : snapshotInfo.RecordDateUtc);
             snapshotCmd.ExecuteNonQuery();
             state.AddWritten(1);
             var insertSw = Stopwatch.StartNew();
@@ -187,6 +237,7 @@ internal static class SqliteWriter
             using var rootCmd = PrepareRootInsert(connection, transaction);
             using var regionCmd = PrepareRegionInsert(connection, transaction);
             using var allocationCmd = PrepareAllocationInsert(connection, transaction);
+            using var systemRegionCmd = PrepareSystemRegionInsert(connection, transaction);
 
             foreach (var batch in queue.GetConsumingEnumerable(token))
             {
@@ -202,9 +253,14 @@ internal static class SqliteWriter
                             nativeCmd.Parameters[1].Value = row.InstanceId ?? string.Empty;
                             nativeCmd.Parameters[2].Value = row.Name ?? string.Empty;
                             nativeCmd.Parameters[3].Value = unchecked((long)row.SizeBytes);
-                            nativeCmd.Parameters[4].Value = row.TypeIndex;
-                            nativeCmd.Parameters[5].Value = row.NativeTypeName ?? string.Empty;
-                            nativeCmd.Parameters[6].Value = row.IsDestroyed ? 1 : 0;
+                            nativeCmd.Parameters[4].Value = unchecked((long)row.NativeObjectAddress);
+                            nativeCmd.Parameters[5].Value = row.RootReferenceId;
+                            nativeCmd.Parameters[6].Value = row.TypeIndex;
+                            nativeCmd.Parameters[7].Value = row.NativeTypeName ?? string.Empty;
+                            nativeCmd.Parameters[8].Value = row.IsDestroyed ? 1 : 0;
+                            nativeCmd.Parameters[9].Value = row.ResidentSizeBytes.HasValue
+                                ? unchecked((long)row.ResidentSizeBytes.Value)
+                                : DBNull.Value;
                             nativeCmd.ExecuteNonQuery();
                         }
                         nativeSw.Stop();
@@ -257,6 +313,9 @@ internal static class SqliteWriter
                             rootCmd.Parameters[2].Value = row.AreaName ?? string.Empty;
                             rootCmd.Parameters[3].Value = row.ObjectName ?? string.Empty;
                             rootCmd.Parameters[4].Value = unchecked((long)row.AccumulatedSizeBytes);
+                            rootCmd.Parameters[5].Value = row.ResidentSizeBytes.HasValue
+                                ? unchecked((long)row.ResidentSizeBytes.Value)
+                                : DBNull.Value;
                             rootCmd.ExecuteNonQuery();
                         }
                         rootSw.Stop();
@@ -294,12 +353,31 @@ internal static class SqliteWriter
                             allocationCmd.Parameters[3].Value = unchecked((long)row.OverheadSizeBytes);
                             allocationCmd.Parameters[4].Value = unchecked((long)row.PaddingSizeBytes);
                             allocationCmd.Parameters[5].Value = row.MemoryRegionIndex >= 0 ? row.MemoryRegionIndex : DBNull.Value;
+                            allocationCmd.Parameters[6].Value = row.RootReferenceId >= 0 ? row.RootReferenceId : DBNull.Value;
                             allocationCmd.ExecuteNonQuery();
                         }
                         allocationSw.Stop();
                         stats.NativeAllocationRows += batch.NativeAllocations.Length;
                         stats.NativeAllocationInsertMs += allocationSw.ElapsedMilliseconds;
                         state.AddWritten(batch.NativeAllocations.Length);
+                        break;
+
+                    case WriteBatchKind.SystemMemoryRegions:
+                        var sysSw = Stopwatch.StartNew();
+                        foreach (var row in batch.SystemMemoryRegions)
+                        {
+                            systemRegionCmd.Parameters[0].Value = row.RegionIndex;
+                            systemRegionCmd.Parameters[1].Value = unchecked((long)row.Address);
+                            systemRegionCmd.Parameters[2].Value = unchecked((long)row.SizeBytes);
+                            systemRegionCmd.Parameters[3].Value = unchecked((long)row.ResidentBytes);
+                            systemRegionCmd.Parameters[4].Value = row.Type;
+                            systemRegionCmd.Parameters[5].Value = row.Name ?? string.Empty;
+                            systemRegionCmd.ExecuteNonQuery();
+                        }
+                        sysSw.Stop();
+                        stats.SystemMemoryRegionRows += batch.SystemMemoryRegions.Length;
+                        stats.SystemMemoryRegionInsertMs += sysSw.ElapsedMilliseconds;
+                        state.AddWritten(batch.SystemMemoryRegions.Length);
                         break;
                 }
             }
@@ -349,14 +427,17 @@ internal static class SqliteWriter
     {
         var command = connection.CreateCommand();
         command.Transaction = tx;
-        command.CommandText = "INSERT INTO native_objects(native_object_index, instance_id, name, size_bytes, type_index, native_type_name, is_destroyed) VALUES ($i, $id, $n, $s, $t, $tn, $d);";
+        command.CommandText = "INSERT INTO native_objects(native_object_index, instance_id, name, size_bytes, native_object_address, root_reference_id, type_index, native_type_name, is_destroyed, resident_size_bytes) VALUES ($i, $id, $n, $s, $addr, $rid, $t, $tn, $d, $r);";
         _ = command.Parameters.Add("$i", SqliteType.Integer);
         _ = command.Parameters.Add("$id", SqliteType.Text);
         _ = command.Parameters.Add("$n", SqliteType.Text);
         _ = command.Parameters.Add("$s", SqliteType.Integer);
+        _ = command.Parameters.Add("$addr", SqliteType.Integer);
+        _ = command.Parameters.Add("$rid", SqliteType.Integer);
         _ = command.Parameters.Add("$t", SqliteType.Integer);
         _ = command.Parameters.Add("$tn", SqliteType.Text);
         _ = command.Parameters.Add("$d", SqliteType.Integer);
+        _ = command.Parameters.Add("$r", SqliteType.Integer);
         return command;
     }
 
@@ -391,12 +472,13 @@ internal static class SqliteWriter
     {
         var command = connection.CreateCommand();
         command.Transaction = tx;
-        command.CommandText = "INSERT INTO native_roots(root_index, root_id, area_name, object_name, accumulated_size_bytes) VALUES ($i, $rid, $a, $o, $s);";
+        command.CommandText = "INSERT INTO native_roots(root_index, root_id, area_name, object_name, accumulated_size_bytes, resident_size_bytes) VALUES ($i, $rid, $a, $o, $s, $r);";
         _ = command.Parameters.Add("$i", SqliteType.Integer);
         _ = command.Parameters.Add("$rid", SqliteType.Integer);
         _ = command.Parameters.Add("$a", SqliteType.Text);
         _ = command.Parameters.Add("$o", SqliteType.Text);
         _ = command.Parameters.Add("$s", SqliteType.Integer);
+        _ = command.Parameters.Add("$r", SqliteType.Integer);
         return command;
     }
 
@@ -419,13 +501,28 @@ internal static class SqliteWriter
     {
         var command = connection.CreateCommand();
         command.Transaction = tx;
-        command.CommandText = "INSERT INTO native_allocations(allocation_index, address, size_bytes, overhead_size_bytes, padding_size_bytes, memory_region_index) VALUES ($i, $a, $s, $o, $p, $r);";
+        command.CommandText = "INSERT INTO native_allocations(allocation_index, address, size_bytes, overhead_size_bytes, padding_size_bytes, memory_region_index, root_reference_id) VALUES ($i, $a, $s, $o, $p, $mr, $rid);";
         _ = command.Parameters.Add("$i", SqliteType.Integer);
         _ = command.Parameters.Add("$a", SqliteType.Integer);
         _ = command.Parameters.Add("$s", SqliteType.Integer);
         _ = command.Parameters.Add("$o", SqliteType.Integer);
         _ = command.Parameters.Add("$p", SqliteType.Integer);
+        _ = command.Parameters.Add("$mr", SqliteType.Integer);
+        _ = command.Parameters.Add("$rid", SqliteType.Integer);
+        return command;
+    }
+
+    private static SqliteCommand PrepareSystemRegionInsert(SqliteConnection connection, SqliteTransaction tx)
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = "INSERT INTO system_memory_regions(region_index, address, size_bytes, resident_bytes, type, name) VALUES ($i, $a, $s, $r, $t, $n);";
+        _ = command.Parameters.Add("$i", SqliteType.Integer);
+        _ = command.Parameters.Add("$a", SqliteType.Integer);
+        _ = command.Parameters.Add("$s", SqliteType.Integer);
         _ = command.Parameters.Add("$r", SqliteType.Integer);
+        _ = command.Parameters.Add("$t", SqliteType.Integer);
+        _ = command.Parameters.Add("$n", SqliteType.Text);
         return command;
     }
 
@@ -465,8 +562,8 @@ internal static class SqliteWriter
 
     private static void WriteNativeObjectRows(SqliteConnection connection, SqliteTransaction tx, NativeObjectRow[] rows)
     {
-        const int cols = 7;
-        const string insertPrefix = "INSERT INTO native_objects(native_object_index, instance_id, name, size_bytes, type_index, native_type_name, is_destroyed) VALUES ";
+        const int cols = 10;
+        const string insertPrefix = "INSERT INTO native_objects(native_object_index, instance_id, name, size_bytes, native_object_address, root_reference_id, type_index, native_type_name, is_destroyed, resident_size_bytes) VALUES ";
         var rowsPerStatement = RowsPerStatement(cols);
         for (var start = 0; start < rows.Length; start += rowsPerStatement)
         {
@@ -480,9 +577,12 @@ internal static class SqliteWriter
                 command.Parameters.AddWithValue($"$p{p + 1}", row.InstanceId ?? string.Empty);
                 command.Parameters.AddWithValue($"$p{p + 2}", row.Name ?? string.Empty);
                 command.Parameters.AddWithValue($"$p{p + 3}", unchecked((long)row.SizeBytes));
-                command.Parameters.AddWithValue($"$p{p + 4}", row.TypeIndex);
-                command.Parameters.AddWithValue($"$p{p + 5}", row.NativeTypeName ?? string.Empty);
-                command.Parameters.AddWithValue($"$p{p + 6}", row.IsDestroyed ? 1 : 0);
+                command.Parameters.AddWithValue($"$p{p + 4}", unchecked((long)row.NativeObjectAddress));
+                command.Parameters.AddWithValue($"$p{p + 5}", row.RootReferenceId);
+                command.Parameters.AddWithValue($"$p{p + 6}", row.TypeIndex);
+                command.Parameters.AddWithValue($"$p{p + 7}", row.NativeTypeName ?? string.Empty);
+                command.Parameters.AddWithValue($"$p{p + 8}", row.IsDestroyed ? 1 : 0);
+                command.Parameters.AddWithValue($"$p{p + 9}", row.ResidentSizeBytes.HasValue ? unchecked((long)row.ResidentSizeBytes.Value) : DBNull.Value);
             }
             command.ExecuteNonQuery();
         }
@@ -537,8 +637,8 @@ internal static class SqliteWriter
 
     private static void WriteNativeRootRows(SqliteConnection connection, SqliteTransaction tx, NativeRootRow[] rows)
     {
-        const int cols = 5;
-        const string insertPrefix = "INSERT INTO native_roots(root_index, root_id, area_name, object_name, accumulated_size_bytes) VALUES ";
+        const int cols = 6;
+        const string insertPrefix = "INSERT INTO native_roots(root_index, root_id, area_name, object_name, accumulated_size_bytes, resident_size_bytes) VALUES ";
         var rowsPerStatement = RowsPerStatement(cols);
         for (var start = 0; start < rows.Length; start += rowsPerStatement)
         {
@@ -553,6 +653,7 @@ internal static class SqliteWriter
                 command.Parameters.AddWithValue($"$p{p + 2}", row.AreaName ?? string.Empty);
                 command.Parameters.AddWithValue($"$p{p + 3}", row.ObjectName ?? string.Empty);
                 command.Parameters.AddWithValue($"$p{p + 4}", unchecked((long)row.AccumulatedSizeBytes));
+                command.Parameters.AddWithValue($"$p{p + 5}", row.ResidentSizeBytes.HasValue ? unchecked((long)row.ResidentSizeBytes.Value) : DBNull.Value);
             }
             command.ExecuteNonQuery();
         }
@@ -585,8 +686,8 @@ internal static class SqliteWriter
 
     private static void WriteNativeAllocationRows(SqliteConnection connection, SqliteTransaction tx, NativeAllocationRow[] rows)
     {
-        const int cols = 6;
-        const string insertPrefix = "INSERT INTO native_allocations(allocation_index, address, size_bytes, overhead_size_bytes, padding_size_bytes, memory_region_index) VALUES ";
+        const int cols = 7;
+        const string insertPrefix = "INSERT INTO native_allocations(allocation_index, address, size_bytes, overhead_size_bytes, padding_size_bytes, memory_region_index, root_reference_id) VALUES ";
         var rowsPerStatement = RowsPerStatement(cols);
         for (var start = 0; start < rows.Length; start += rowsPerStatement)
         {
@@ -602,6 +703,31 @@ internal static class SqliteWriter
                 command.Parameters.AddWithValue($"$p{p + 3}", unchecked((long)row.OverheadSizeBytes));
                 command.Parameters.AddWithValue($"$p{p + 4}", unchecked((long)row.PaddingSizeBytes));
                 command.Parameters.AddWithValue($"$p{p + 5}", row.MemoryRegionIndex >= 0 ? row.MemoryRegionIndex : DBNull.Value);
+                command.Parameters.AddWithValue($"$p{p + 6}", row.RootReferenceId >= 0 ? row.RootReferenceId : DBNull.Value);
+            }
+            command.ExecuteNonQuery();
+        }
+    }
+
+    private static void WriteSystemMemoryRegionRows(SqliteConnection connection, SqliteTransaction tx, SystemMemoryRegionRow[] rows)
+    {
+        const int cols = 6;
+        const string insertPrefix = "INSERT INTO system_memory_regions(region_index, address, size_bytes, resident_bytes, type, name) VALUES ";
+        var rowsPerStatement = RowsPerStatement(cols);
+        for (var start = 0; start < rows.Length; start += rowsPerStatement)
+        {
+            var count = Math.Min(rowsPerStatement, rows.Length - start);
+            using var command = CreateBulkInsertCommand(connection, tx, insertPrefix, count, cols);
+            for (var i = 0; i < count; i++)
+            {
+                var row = rows[start + i];
+                var p = i * cols;
+                command.Parameters.AddWithValue($"$p{p}", row.RegionIndex);
+                command.Parameters.AddWithValue($"$p{p + 1}", unchecked((long)row.Address));
+                command.Parameters.AddWithValue($"$p{p + 2}", unchecked((long)row.SizeBytes));
+                command.Parameters.AddWithValue($"$p{p + 3}", unchecked((long)row.ResidentBytes));
+                command.Parameters.AddWithValue($"$p{p + 4}", row.Type);
+                command.Parameters.AddWithValue($"$p{p + 5}", row.Name ?? string.Empty);
             }
             command.ExecuteNonQuery();
         }
@@ -645,11 +771,17 @@ DROP TABLE IF EXISTS connections;
 DROP TABLE IF EXISTS native_roots;
 DROP TABLE IF EXISTS memory_regions;
 DROP TABLE IF EXISTS native_allocations;
+DROP TABLE IF EXISTS system_memory_regions;
 
 CREATE TABLE snapshot_info (
     snapshot_path TEXT NOT NULL,
     exported_at_utc TEXT NOT NULL,
-    unity_version TEXT
+    unity_version TEXT,
+    snap_format_version INTEGER,
+    session_guid INTEGER,
+    product_name TEXT,
+    platform TEXT,
+    record_date_utc TEXT
 );
 
 CREATE TABLE native_objects (
@@ -657,9 +789,12 @@ CREATE TABLE native_objects (
     instance_id TEXT,
     name TEXT,
     size_bytes INTEGER NOT NULL,
+    native_object_address INTEGER NOT NULL DEFAULT 0,
+    root_reference_id INTEGER NOT NULL DEFAULT -1,
     type_index INTEGER,
     native_type_name TEXT,
-    is_destroyed INTEGER NOT NULL DEFAULT 0
+    is_destroyed INTEGER NOT NULL DEFAULT 0,
+    resident_size_bytes INTEGER
 );
 
 CREATE TABLE managed_objects (
@@ -684,7 +819,8 @@ CREATE TABLE native_roots (
     root_id INTEGER NOT NULL,
     area_name TEXT,
     object_name TEXT,
-    accumulated_size_bytes INTEGER NOT NULL
+    accumulated_size_bytes INTEGER NOT NULL,
+    resident_size_bytes INTEGER
 );
 
 CREATE TABLE memory_regions (
@@ -703,7 +839,25 @@ CREATE TABLE native_allocations (
     size_bytes INTEGER NOT NULL,
     overhead_size_bytes INTEGER NOT NULL,
     padding_size_bytes INTEGER NOT NULL,
-    memory_region_index INTEGER
+    memory_region_index INTEGER,
+    root_reference_id INTEGER
+);
+
+CREATE TABLE system_memory_regions (
+    region_index INTEGER PRIMARY KEY,
+    address INTEGER NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    resident_bytes INTEGER NOT NULL,
+    type INTEGER NOT NULL,
+    name TEXT
+);
+
+CREATE TABLE summary_metrics (
+    metric_group TEXT NOT NULL,
+    category TEXT NOT NULL,
+    committed_bytes INTEGER NOT NULL,
+    resident_bytes INTEGER NOT NULL,
+    resident_available INTEGER NOT NULL
 );
 """;
 

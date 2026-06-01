@@ -29,6 +29,14 @@ public interface IExportDestinationWriter
         CancellationToken token);
 
     /// <summary>
+    /// Writes the MemoryProfiler summary metrics into the <c>summary_metrics</c> table. Called after the
+    /// main pipeline write (which creates the schema) and before validation.
+    /// </summary>
+    /// <param name="dbPath">Output database file path.</param>
+    /// <param name="metrics">Summary metrics computed during extraction.</param>
+    void WriteSummaryMetrics(string dbPath, SummaryMetrics metrics);
+
+    /// <summary>
     /// Runs optional validation on the written database (e.g. row count checks, referential integrity) according to <paramref name="mode"/>.
     /// </summary>
     /// <param name="dbPath">Path to the database file.</param>

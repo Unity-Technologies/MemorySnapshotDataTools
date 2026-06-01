@@ -74,6 +74,8 @@ internal sealed class ManagedSnapshotCrawler
             TryEnsureManagedObject(address, $"gc-handle[{gcHandleIndex}]");
         }
 
+        SeedStaticFieldRoots();
+
         while (_crawlQueue.Count > 0)
         {
             var address = _crawlQueue.Dequeue();
@@ -338,6 +340,96 @@ internal sealed class ManagedSnapshotCrawler
                     yield return targetAddress;
             }
         }
+    }
+
+    /// <summary>
+    /// Seeds the crawl from static field roots: each managed type's static field bytes are scanned for
+    /// references the same way Memory Profiler's static-fields crawler does, so objects reachable only via
+    /// statics (not from a GC handle) are discovered. Without this, that memory is misreported as empty heap.
+    /// </summary>
+    private void SeedStaticFieldRoots()
+    {
+        var staticBytes = _snapshot.ManagedTypeStaticFieldBytes;
+        if (staticBytes.Length == 0)
+            return;
+
+        var typeCount = _snapshot.ManagedTypeNames.Length;
+        for (var typeIndex = 0; typeIndex < typeCount && typeIndex < staticBytes.Length; typeIndex++)
+        {
+            var blob = staticBytes[typeIndex];
+            if (blob is null || blob.Length == 0)
+                continue;
+
+            foreach (var fieldIndex in _snapshot.ManagedTypeFieldIndices[typeIndex])
+            {
+                if ((uint)fieldIndex >= (uint)_snapshot.FieldIsStatic.Length)
+                    continue;
+                if (_snapshot.FieldIsStatic[fieldIndex] == 0)
+                    continue;
+
+                var offset = _snapshot.FieldOffsets[fieldIndex];
+                if (offset < 0)
+                    continue;
+
+                var fieldTypeIndex = _snapshot.FieldTypeIndices[fieldIndex];
+                if (fieldTypeIndex < 0 || fieldTypeIndex >= typeCount)
+                    continue;
+
+                CrawlStaticBlobReference(blob, offset, fieldTypeIndex, recursionDepth: 0);
+            }
+        }
+    }
+
+    private void CrawlStaticBlobReference(byte[] blob, long offset, int fieldTypeIndex, int recursionDepth)
+    {
+        if (recursionDepth > 24)
+            return;
+
+        if (!IsValueType(fieldTypeIndex))
+        {
+            if (TryReadPointerFromBlob(blob, offset, out var target) && target != 0)
+                TryEnsureManagedObject(target, "static field");
+            return;
+        }
+
+        // Value-type static field: walk its reference subfields in place within the static blob.
+        foreach (var subFieldIndex in GetInstanceFieldIndices(fieldTypeIndex))
+        {
+            if (_snapshot.FieldIsStatic[subFieldIndex] != 0)
+                continue;
+
+            var adjustedOffset = _snapshot.FieldOffsets[subFieldIndex] - (int)_vm.ObjectHeaderSize;
+            if (adjustedOffset < 0)
+                continue;
+
+            var subTypeIndex = _snapshot.FieldTypeIndices[subFieldIndex];
+            if (subTypeIndex < 0 || subTypeIndex >= _snapshot.ManagedTypeNames.Length)
+                continue;
+
+            if (IsValueType(subTypeIndex))
+            {
+                if (subTypeIndex == fieldTypeIndex)
+                    continue;
+                CrawlStaticBlobReference(blob, offset + adjustedOffset, subTypeIndex, recursionDepth + 1);
+            }
+            else if (TryReadPointerFromBlob(blob, offset + adjustedOffset, out var target) && target != 0)
+            {
+                TryEnsureManagedObject(target, "static value-type field");
+            }
+        }
+    }
+
+    private bool TryReadPointerFromBlob(byte[] blob, long offset, out ulong value)
+    {
+        value = 0;
+        if (offset < 0 || checked(offset + _vm.PointerSize) > blob.Length)
+            return false;
+
+        var span = blob.AsSpan(checked((int)offset));
+        value = _vm.PointerSize == 8
+            ? BinaryPrimitives.ReadUInt64LittleEndian(span)
+            : BinaryPrimitives.ReadUInt32LittleEndian(span);
+        return true;
     }
 
     private int[] GetInstanceFieldIndices(int typeIndex)

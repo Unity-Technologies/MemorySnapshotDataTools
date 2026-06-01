@@ -13,6 +13,7 @@ public enum WriteBatchKind
     NativeRoots,
     MemoryRegions,
     NativeAllocations,
+    SystemMemoryRegions,
 }
 
 /// <summary>
@@ -43,6 +44,9 @@ public sealed class WriteBatch
     /// <summary>Populated when <see cref="Kind"/> is <see cref="WriteBatchKind.NativeAllocations"/>.</summary>
     public NativeAllocationRow[] NativeAllocations { get; init; } = [];
 
+    /// <summary>Populated when <see cref="Kind"/> is <see cref="WriteBatchKind.SystemMemoryRegions"/>.</summary>
+    public SystemMemoryRegionRow[] SystemMemoryRegions { get; init; } = [];
+
     /// <summary>Creates a batch of native object rows.</summary>
     public static WriteBatch ForNativeObjects(NativeObjectRow[] rows) => new() { Kind = WriteBatchKind.NativeObjects, NativeObjects = rows };
 
@@ -60,6 +64,9 @@ public sealed class WriteBatch
 
     /// <summary>Creates a batch of native allocation rows.</summary>
     public static WriteBatch ForNativeAllocations(NativeAllocationRow[] rows) => new() { Kind = WriteBatchKind.NativeAllocations, NativeAllocations = rows };
+
+    /// <summary>Creates a batch of OS system memory region rows.</summary>
+    public static WriteBatch ForSystemMemoryRegions(SystemMemoryRegionRow[] rows) => new() { Kind = WriteBatchKind.SystemMemoryRegions, SystemMemoryRegions = rows };
 }
 
 /// <summary>
@@ -129,6 +136,9 @@ public sealed class ExportCounts
     /// <summary>Number of native allocations written.</summary>
     public int NativeAllocations;
 
+    /// <summary>Number of OS system memory regions written.</summary>
+    public int SystemMemoryRegions;
+
     /// <summary>Time spent materializing batches (ms).</summary>
     public long MaterializeMs;
 
@@ -164,6 +174,9 @@ public sealed class ExportCounts
 
     /// <summary>Per-table insert times (ms).</summary>
     public long NativeAllocationInsertMs;
+
+    /// <summary>Per-table insert times (ms).</summary>
+    public long SystemMemoryRegionInsertMs;
 }
 
 /// <summary>
@@ -190,6 +203,9 @@ public sealed class WriteStats
     /// <summary>Rows written per table.</summary>
     public long NativeAllocationRows;
 
+    /// <summary>Rows written per table.</summary>
+    public long SystemMemoryRegionRows;
+
     /// <summary>Insert time per table (ms).</summary>
     public long NativeObjectInsertMs;
 
@@ -207,6 +223,9 @@ public sealed class WriteStats
 
     /// <summary>Insert time per table (ms).</summary>
     public long NativeAllocationInsertMs;
+
+    /// <summary>Insert time per table (ms).</summary>
+    public long SystemMemoryRegionInsertMs;
 
     /// <summary>Total time spent in inserts (ms).</summary>
     public long TotalInsertMs;
