@@ -54,6 +54,12 @@ public sealed class SummaryReport
 
     /// <summary>False when a database lacked a <c>summary_metrics</c> table (export with the current tool).</summary>
     public bool SummaryAvailable { get; init; } = true;
+
+    /// <summary>
+    /// Schema version display (e.g. "1.1", or with a re-export/upgrade advisory when behind). For a
+    /// snapshot source there is no exported database yet, so this notes the version a fresh export would write.
+    /// </summary>
+    public string SchemaVersion { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -127,6 +133,7 @@ public static class SummaryReportRunner
             Metrics = data.SummaryMetrics,
             UnityObjectCategories = Report.UnityObjectCategories.FromNativeObjects(data.NativeObjects),
             SummaryAvailable = true,
+            SchemaVersion = $"{DatabaseSchemaInfo.SchemaMajor}.{DatabaseSchemaInfo.SchemaMinor} (on export)",
         };
     }
 
@@ -144,6 +151,7 @@ public static class SummaryReportRunner
         var info = ReadSnapshotInfo(connection);
         var (metrics, available) = ReadSummaryMetrics(connection);
         var categories = ReadUnityObjectCategories(connection);
+        var (major, minor) = DatabaseSchemaInfo.ReadVersion(connection);
 
         return new SummaryReport
         {
@@ -153,6 +161,7 @@ public static class SummaryReportRunner
             Metrics = metrics,
             UnityObjectCategories = categories,
             SummaryAvailable = available,
+            SchemaVersion = DatabaseSchemaInfo.DescribeVersion(major, minor),
         };
     }
 

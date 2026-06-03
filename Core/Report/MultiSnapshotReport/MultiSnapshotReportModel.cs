@@ -59,6 +59,12 @@ public sealed record SnapshotMetricsRow
     /// <summary>Snap file format version when known.</summary>
     public uint SnapFormatVersion { get; init; }
 
+    /// <summary>Database schema version display (e.g. "1.1", or with an advisory when behind the current build).</summary>
+    public string SchemaVersion { get; init; } = string.Empty;
+
+    /// <summary>True when the database schema matches the current build (no upgrade/re-export needed).</summary>
+    public bool SchemaUpToDate { get; init; } = true;
+
     /// <summary>Profiler session GUID from snapshot metadata.</summary>
     public uint SessionGuid { get; init; }
 

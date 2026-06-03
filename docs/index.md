@@ -1,4 +1,4 @@
-# TechDocs space for cse-memory-snapshot-data-tool 
+# TechDocs space for MemorySnapshotDataTools
 
 !!! note
     This repo has been pre-populated by RepoDB with a skeleton to get your documentation started.  More information on TechDocs used at Unity can be found [here](http://go/docs-techdocs) 
@@ -9,4 +9,4 @@ To update this file, see `docs/index.md` in your repo.
 
 ### If you are viewing this page in GitHub 
 
-View this documentation rendered in Unity Internal Developer Portal [here](https://developer.portal.internal.unity.com/catalog/default/component/cse-memory-snapshot-data-tool/docs).
+View this documentation rendered in Unity Internal Developer Portal [here](https://developer.portal.internal.unity.com/catalog/default/component/MemorySnapshotDataTools/docs).

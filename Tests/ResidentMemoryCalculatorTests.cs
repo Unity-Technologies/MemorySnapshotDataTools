@@ -39,6 +39,8 @@ public sealed class ResidentMemoryCalculatorTests
         var data = SnapshotBridge.ExtractFromDecoded(decoded, "/test.snap");
         var row = Assert.Single(data.NativeObjects);
         Assert.Equal(pageSize, row.ResidentSizeBytes);
+        // page_size is carried from the decoded snapshot into snapshot_info.
+        Assert.Equal(pageSize, data.SnapshotInfo.PageSize);
     }
 
     /// <summary>
@@ -58,6 +60,8 @@ public sealed class ResidentMemoryCalculatorTests
         var row = Assert.Single(data.NativeObjects);
         Assert.Null(row.ResidentSizeBytes);
         Assert.Single(data.SystemMemoryRegions);
+        // No resident page data (format < 17) → page_size unknown (0).
+        Assert.Equal(0UL, data.SnapshotInfo.PageSize);
     }
 
     private static DecodedSnapshot CreateMinimalDecoded(uint formatVersion)

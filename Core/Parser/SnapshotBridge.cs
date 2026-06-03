@@ -56,6 +56,7 @@ public static class SnapshotBridge
                 RecordDateUtc = decoded.RecordDateTicksUtc > 0
                     ? new DateTime(decoded.RecordDateTicksUtc, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture)
                     : string.Empty,
+                PageSize = decoded.SystemMemoryResidentPageSize,
             }
         };
 

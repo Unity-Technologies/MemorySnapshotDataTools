@@ -43,4 +43,14 @@ public interface IExportDestinationWriter
     /// <param name="rawData">Original snapshot data used for expected counts.</param>
     /// <param name="mode">Validation level (none, minimal, full).</param>
     void Validate(string dbPath, RawSnapshotData rawData, ValidationMode mode);
+
+    /// <summary>
+    /// Performs an in-place <b>minor</b> schema upgrade on an existing database: re-applies indexes and
+    /// analysis views and bumps <c>schema_meta.schema_version_minor</c> to
+    /// <see cref="DatabaseSchemaInfo.SchemaMinor"/>. Does not touch table data and never re-parses the
+    /// snapshot — only valid when the database's major version matches the current one (see
+    /// <see cref="DatabaseSchemaInfo"/>). Opens the database read-write.
+    /// </summary>
+    /// <param name="dbPath">Path to the database file to upgrade.</param>
+    void UpgradeSchema(string dbPath);
 }

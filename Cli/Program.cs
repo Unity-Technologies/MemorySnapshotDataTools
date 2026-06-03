@@ -1,5 +1,6 @@
 using MemorySnapshotDataTools;
 using MemorySnapshotDataTools.Export;
+using MemorySnapshotDataTools.ExportDestination;
 using MemorySnapshotDataTools.Report;
 using MemorySnapshotDataTools.Report.MultiSnapshotReport;
 using MemorySnapshotDataTools.Validation;
@@ -10,7 +11,7 @@ internal static class Program
 {
     private static int Main(string[] args)
     {
-        var root = CommandLineBuilder.Build(RunExport, RunBatchExport, RunReport, RunMultiReport, RunValidateGolden, RunSummary);
+        var root = CommandLineBuilder.Build(RunExport, RunBatchExport, RunReport, RunMultiReport, RunValidateGolden, RunSummary, RunUpgrade);
         return root.Parse(args).Invoke();
     }
 
@@ -72,6 +73,7 @@ internal static class Program
 
     private static int RunReport(CliOptions options)
     {
+        SchemaGate.Check(options.ReportDbPath);
         var reportOptions = new ReportRunOptions
         {
             ReportDbPath = options.ReportDbPath,
@@ -97,6 +99,7 @@ internal static class Program
 
     private static int RunValidateGolden(CliOptions options)
     {
+        SchemaGate.Check(options.ReportDbPath);
         try
         {
             return GoldenValidationRunner.ValidateAndWriteResult(
@@ -114,6 +117,8 @@ internal static class Program
 
     private static int RunSummary(CliOptions options)
     {
+        // Summary accepts either a .snap or an exported database; only databases have a schema to check.
+        SchemaGate.Check(options.SummaryInputPath);
         var progress = new ConsoleProgress(options.Verbose);
         using var cts = CreateCancellationSource();
 
@@ -132,6 +137,48 @@ internal static class Program
         {
             Console.Error.WriteLine("Summary cancelled.");
             return 2;
+        }
+    }
+
+    private static int RunUpgrade(CliOptions options)
+    {
+        try
+        {
+            var before = DatabaseMaintenance.Inspect(options.UpgradeDbPath);
+            var current = $"v{DatabaseSchemaInfo.SchemaMajor}.{DatabaseSchemaInfo.SchemaMinor}";
+
+            switch (before.Action)
+            {
+                case SchemaAction.None:
+                    Console.WriteLine($"Database is already at the current schema {current}. Nothing to do.");
+                    return 0;
+
+                case SchemaAction.ToolOutdated:
+                    Console.Error.WriteLine(
+                        $"Database schema v{before.Major}.{before.Minor} is newer than this build ({current}). " +
+                        $"Update {DatabaseSchemaInfo.ToolName} instead of downgrading.");
+                    return 1;
+
+                case SchemaAction.ReExport:
+                    Console.Error.WriteLine(
+                        $"Database major version (v{before.Major}) is behind v{DatabaseSchemaInfo.SchemaMajor}; an in-place upgrade is not possible. " +
+                        "Re-export from the original snapshot:");
+                    Console.Error.WriteLine($"  {before.ReExportCommand ?? $"{DatabaseSchemaInfo.ToolName} export <snapshot.snap> \"{options.UpgradeDbPath}\""}");
+                    return 1;
+
+                case SchemaAction.UpgradeInPlace:
+                    DatabaseMaintenance.UpgradeInPlace(options.UpgradeDbPath);
+                    Console.WriteLine($"Upgraded database schema from v{before.Major}.{before.Minor} to {current}.");
+                    return 0;
+            }
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("Schema upgrade failed.");
+            Console.Error.WriteLine(ex.Message);
+            return 1;
         }
     }
 

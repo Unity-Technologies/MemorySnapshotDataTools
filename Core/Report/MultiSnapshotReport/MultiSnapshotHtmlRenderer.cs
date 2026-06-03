@@ -149,9 +149,23 @@ public static class MultiSnapshotHtmlRenderer
         sb.Append(EscapeAttr(snap.SnapshotName));
         sb.Append("\"><span class=\"snapshot-label\">");
         sb.Append(PlatformIconHtml.Render(snap.PlatformKind, snap.Platform));
-        sb.Append("<span class=\"snapshot-filename\">");
+        sb.Append("<span class=\"snapshot-filename\"");
+        if (!string.IsNullOrWhiteSpace(snap.SchemaVersion))
+        {
+            sb.Append(" title=\"Schema ");
+            sb.Append(EscapeAttr(snap.SchemaVersion));
+            sb.Append('"');
+        }
+        sb.Append('>');
         sb.Append(Escape(snap.SnapshotName));
-        sb.Append("</span></span></td>");
+        sb.Append("</span>");
+        if (!snap.SchemaUpToDate && !string.IsNullOrWhiteSpace(snap.SchemaVersion))
+        {
+            sb.Append("<span class=\"schema-warn\" title=\"Schema ");
+            sb.Append(EscapeAttr(snap.SchemaVersion));
+            sb.Append("\"> ⚠</span>");
+        }
+        sb.Append("</span></td>");
     }
 
     private static void AppendCountCell(StringBuilder sb, int col, int count)

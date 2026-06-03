@@ -1,4 +1,4 @@
-#Validation script for cse-memory-snapshot-data-tool
+#Validation script for MemorySnapshotDataTools
 #This is used to validate your catalog-info.yaml 
 
 name: Validate Catalog-info.yaml

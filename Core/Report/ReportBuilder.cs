@@ -38,6 +38,7 @@ internal static class ReportBuilder
             kv["Exported At (UTC)"] = r.Length > 1 ? r[1] : null;
             kv["Unity Version"] = r.Length > 2 ? r[2] : null;
         }
+        kv["Schema Version"] = ReadSchemaVersion(backend);
         kv["Report Generated"] = generatedAtUtc;
 
         var totalRows = countRows.Sum(row => row.Length > 1 && row[1] != null ? Convert.ToInt64(row[1]) : 0);
@@ -350,6 +351,23 @@ internal static class ReportBuilder
         foreach (var sec in group.Sections)
             navGroup.Items.Add(new NavItem { Anchor = sec.Anchor, Title = sec.SectionTitle });
         model.NavGroups.Add(navGroup);
+    }
+
+    /// <summary>
+    /// Reads the schema version via the backend for display in the Snapshot Info section, returning a
+    /// re-export advisory for pre-versioning databases that lack <c>schema_meta</c>. Uses the constant
+    /// <see cref="ReportSql.SchemaMeta"/> query (no external input).
+    /// </summary>
+    private static string ReadSchemaVersion(IReportQueryBackend backend)
+    {
+        if (!backend.HasColumn("schema_meta", "schema_version_major"))
+            return DatabaseSchemaInfo.DescribeVersion(0, 0);
+
+        var (_, rows) = backend.ExecuteQuery(ReportSql.SchemaMeta);
+        if (rows.Count == 0 || rows[0].Length < 2 || rows[0][0] is null || rows[0][1] is null)
+            return DatabaseSchemaInfo.DescribeVersion(0, 0);
+
+        return DatabaseSchemaInfo.DescribeVersion(Convert.ToInt32(rows[0][0]), Convert.ToInt32(rows[0][1]));
     }
 
     private static double ToDouble(object? o)

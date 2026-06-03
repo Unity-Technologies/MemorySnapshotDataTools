@@ -175,6 +175,37 @@ internal static class SqliteWriter
 
     #endregion
 
+    #region UpgradeSchema
+
+    /// <summary>
+    /// Re-applies indexes and analysis views to an existing SQLite database and bumps the minor schema
+    /// version. See <see cref="IExportDestinationWriter.UpgradeSchema"/>.
+    /// </summary>
+    public static void UpgradeSchema(string dbPath)
+    {
+        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.Open();
+
+        using var transaction = connection.BeginTransaction();
+        // Views are dropped+recreated by CreateViewsScript; indexes use IF NOT EXISTS — both re-runnable.
+        ExecScript(connection, transaction, DropViewsScript);
+        ExecScript(connection, transaction, CreateIndexesScript);
+        ExecScript(connection, transaction, CreateViewsScript);
+
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.Transaction = transaction;
+            cmd.CommandText = "UPDATE schema_meta SET schema_version_minor = $min, msdt_version = $m;";
+            cmd.Parameters.AddWithValue("$min", DatabaseSchemaInfo.SchemaMinor);
+            cmd.Parameters.AddWithValue("$m", DatabaseSchemaInfo.ToolVersion);
+            cmd.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    #endregion
+
     #region ConsumeAndWrite
 
     /// <summary>
@@ -212,13 +243,24 @@ internal static class SqliteWriter
         {
             ExecScript(connection, transaction, SchemaTablesScript);
 
+            using (var metaCmd = connection.CreateCommand())
+            {
+                metaCmd.Transaction = transaction;
+                metaCmd.CommandText = "INSERT INTO schema_meta(schema_version_major, schema_version_minor, msdt_version, created_at_utc) VALUES ($maj, $min, $m, $c);";
+                metaCmd.Parameters.AddWithValue("$maj", DatabaseSchemaInfo.SchemaMajor);
+                metaCmd.Parameters.AddWithValue("$min", DatabaseSchemaInfo.SchemaMinor);
+                metaCmd.Parameters.AddWithValue("$m", DatabaseSchemaInfo.ToolVersion);
+                metaCmd.Parameters.AddWithValue("$c", DateTime.UtcNow.ToString("O"));
+                metaCmd.ExecuteNonQuery();
+            }
+
             using var snapshotCmd = connection.CreateCommand();
             snapshotCmd.Transaction = transaction;
             snapshotCmd.CommandText = """
                 INSERT INTO snapshot_info(
                     snapshot_path, exported_at_utc, unity_version,
-                    snap_format_version, session_guid, product_name, platform, record_date_utc)
-                VALUES ($p, $e, $u, $sf, $sg, $pn, $pl, $rd);
+                    snap_format_version, session_guid, product_name, platform, record_date_utc, page_size)
+                VALUES ($p, $e, $u, $sf, $sg, $pn, $pl, $rd, $ps);
                 """;
             snapshotCmd.Parameters.AddWithValue("$p", snapshotInfo.SnapshotPath);
             snapshotCmd.Parameters.AddWithValue("$e", snapshotInfo.ExportedAtUtc);
@@ -228,6 +270,7 @@ internal static class SqliteWriter
             snapshotCmd.Parameters.AddWithValue("$pn", string.IsNullOrEmpty(snapshotInfo.ProductName) ? DBNull.Value : snapshotInfo.ProductName);
             snapshotCmd.Parameters.AddWithValue("$pl", string.IsNullOrEmpty(snapshotInfo.Platform) ? DBNull.Value : snapshotInfo.Platform);
             snapshotCmd.Parameters.AddWithValue("$rd", string.IsNullOrEmpty(snapshotInfo.RecordDateUtc) ? DBNull.Value : snapshotInfo.RecordDateUtc);
+            snapshotCmd.Parameters.AddWithValue("$ps", snapshotInfo.PageSize == 0 ? DBNull.Value : unchecked((long)snapshotInfo.PageSize));
             snapshotCmd.ExecuteNonQuery();
             state.AddWritten(1);
             var insertSw = Stopwatch.StartNew();
@@ -393,6 +436,7 @@ internal static class SqliteWriter
             using (var indexTransaction = connection.BeginTransaction())
             {
                 ExecScript(connection, indexTransaction, CreateIndexesScript);
+                ExecScript(connection, indexTransaction, CreateViewsScript);
                 indexTransaction.Commit();
             }
             indexSw.Stop();
@@ -764,6 +808,12 @@ internal static class SqliteWriter
     #endregion
 
     private const string SchemaTablesScript = """
+DROP VIEW IF EXISTS v_assetbundle_utilization;
+DROP VIEW IF EXISTS v_connection_edges;
+DROP VIEW IF EXISTS v_region_owner_breakdown;
+DROP VIEW IF EXISTS v_system_region_summary;
+DROP VIEW IF EXISTS v_allocation_enriched;
+DROP TABLE IF EXISTS schema_meta;
 DROP TABLE IF EXISTS snapshot_info;
 DROP TABLE IF EXISTS native_objects;
 DROP TABLE IF EXISTS managed_objects;
@@ -773,6 +823,13 @@ DROP TABLE IF EXISTS memory_regions;
 DROP TABLE IF EXISTS native_allocations;
 DROP TABLE IF EXISTS system_memory_regions;
 
+CREATE TABLE schema_meta (
+    schema_version_major INTEGER NOT NULL,
+    schema_version_minor INTEGER NOT NULL,
+    msdt_version TEXT,
+    created_at_utc TEXT NOT NULL
+);
+
 CREATE TABLE snapshot_info (
     snapshot_path TEXT NOT NULL,
     exported_at_utc TEXT NOT NULL,
@@ -781,7 +838,8 @@ CREATE TABLE snapshot_info (
     session_guid INTEGER,
     product_name TEXT,
     platform TEXT,
-    record_date_utc TEXT
+    record_date_utc TEXT,
+    page_size INTEGER
 );
 
 CREATE TABLE native_objects (
@@ -861,15 +919,129 @@ CREATE TABLE summary_metrics (
 );
 """;
 
+    // CREATE INDEX IF NOT EXISTS so this script is idempotent and re-runnable by the in-place
+    // schema upgrade path (UpgradeSchema), not just on a fresh export.
     private const string CreateIndexesScript = """
-CREATE INDEX idx_connections_from ON connections(from_kind, from_index);
-CREATE INDEX idx_connections_to ON connections(to_kind, to_index);
-CREATE INDEX idx_native_objects_instance_id ON native_objects(instance_id);
-CREATE INDEX idx_native_objects_is_destroyed ON native_objects(is_destroyed);
-CREATE INDEX idx_managed_objects_address ON managed_objects(address);
-CREATE INDEX idx_memory_regions_address_base ON memory_regions(address_base);
-CREATE INDEX idx_native_allocations_address ON native_allocations(address);
-CREATE INDEX idx_native_allocations_region ON native_allocations(memory_region_index);
+CREATE INDEX IF NOT EXISTS idx_connections_from ON connections(from_kind, from_index);
+CREATE INDEX IF NOT EXISTS idx_connections_to ON connections(to_kind, to_index);
+CREATE INDEX IF NOT EXISTS idx_native_objects_instance_id ON native_objects(instance_id);
+CREATE INDEX IF NOT EXISTS idx_native_objects_is_destroyed ON native_objects(is_destroyed);
+CREATE INDEX IF NOT EXISTS idx_managed_objects_address ON managed_objects(address);
+CREATE INDEX IF NOT EXISTS idx_memory_regions_address_base ON memory_regions(address_base);
+CREATE INDEX IF NOT EXISTS idx_native_allocations_address ON native_allocations(address);
+CREATE INDEX IF NOT EXISTS idx_native_allocations_region ON native_allocations(memory_region_index);
+CREATE INDEX IF NOT EXISTS idx_system_memory_regions_address ON system_memory_regions(address);
+""";
+
+    // Drops the analysis views so CreateViewsScript (which uses CREATE VIEW, not CREATE OR REPLACE,
+    // for SQLite) is re-runnable by the in-place upgrade path. Order does not matter with IF EXISTS.
+    private const string DropViewsScript = """
+DROP VIEW IF EXISTS v_assetbundle_utilization;
+DROP VIEW IF EXISTS v_connection_edges;
+DROP VIEW IF EXISTS v_region_owner_breakdown;
+DROP VIEW IF EXISTS v_system_region_summary;
+DROP VIEW IF EXISTS v_allocation_enriched;
+""";
+
+    // Analysis views mirroring the DuckDB ones (docs/database-schema.md). SQLite has no ASOF JOIN
+    // or table macros, so v_allocation_enriched resolves the containing system region via a
+    // correlated subquery (nearest region whose range covers the address), and the per-region
+    // page-density helper (region_page_density) is DuckDB-only — see the doc for the manual query.
+    private const string CreateViewsScript = """
+CREATE VIEW v_allocation_enriched AS
+SELECT
+    a.allocation_index,
+    a.address,
+    a.size_bytes,
+    a.overhead_size_bytes,
+    a.padding_size_bytes,
+    a.memory_region_index,
+    mr.name AS unity_region_name,
+    (SELECT s.region_index FROM system_memory_regions s
+     WHERE s.address <= a.address AND a.address < s.address + s.size_bytes
+     ORDER BY s.address DESC LIMIT 1) AS system_region_index,
+    (SELECT s.name FROM system_memory_regions s
+     WHERE s.address <= a.address AND a.address < s.address + s.size_bytes
+     ORDER BY s.address DESC LIMIT 1) AS system_region_name,
+    a.root_reference_id,
+    rt.area_name,
+    rt.object_name AS root_object_name,
+    o.native_object_index,
+    o.native_type_name,
+    o.name AS object_name
+FROM native_allocations a
+LEFT JOIN memory_regions mr ON mr.region_index = a.memory_region_index
+LEFT JOIN native_roots rt ON rt.root_id = a.root_reference_id
+LEFT JOIN native_objects o ON o.root_reference_id = a.root_reference_id;
+
+CREATE VIEW v_system_region_summary AS
+SELECT
+    s.region_index,
+    s.name,
+    printf('0x%x', s.address) AS addr_hex,
+    s.size_bytes AS committed_bytes,
+    s.resident_bytes,
+    ROUND(100.0 * s.resident_bytes / NULLIF(s.size_bytes, 0), 1) AS pct_resident,
+    COUNT(a.allocation_index) AS unity_alloc_count,
+    COALESCE(SUM(a.size_bytes), 0) AS unity_live_bytes,
+    ROUND(100.0 * COALESCE(SUM(a.size_bytes), 0) / NULLIF(s.resident_bytes, 0), 1) AS unity_live_pct_of_resident
+FROM system_memory_regions s
+LEFT JOIN native_allocations a
+       ON a.address >= s.address AND a.address < s.address + s.size_bytes
+GROUP BY s.region_index, s.name, s.address, s.size_bytes, s.resident_bytes;
+
+CREATE VIEW v_region_owner_breakdown AS
+SELECT
+    system_region_name,
+    COALESCE(native_type_name, area_name, '(untracked/no-root)') AS owner,
+    COUNT(*) AS alloc_count,
+    SUM(size_bytes) AS live_bytes
+FROM v_allocation_enriched
+GROUP BY 1, 2;
+
+CREATE VIEW v_connection_edges AS
+SELECT
+    c.connection_type,
+    c.from_kind,
+    c.from_index,
+    COALESCE(fno.native_type_name, fmo.managed_type_name) AS from_type,
+    fno.name AS from_name,
+    c.to_kind,
+    c.to_index,
+    COALESCE(tno.native_type_name, tmo.managed_type_name) AS to_type,
+    tno.name AS to_name
+-- Kind check folded into the join KEY (see the DuckDB copy) so the equi-join stays index-friendly.
+-- The native and managed object index spaces overlap, so the kind guard is required for correctness.
+FROM connections c
+LEFT JOIN native_objects  fno ON fno.native_object_index  = (CASE WHEN c.from_kind = 'native_object'  THEN c.from_index END)
+LEFT JOIN managed_objects fmo ON fmo.managed_object_index = (CASE WHEN c.from_kind = 'managed_object' THEN c.from_index END)
+LEFT JOIN native_objects  tno ON tno.native_object_index  = (CASE WHEN c.to_kind   = 'native_object'  THEN c.to_index   END)
+LEFT JOIN managed_objects tmo ON tmo.managed_object_index = (CASE WHEN c.to_kind   = 'managed_object' THEN c.to_index   END);
+
+CREATE VIEW v_assetbundle_utilization AS
+WITH refs AS (
+    SELECT DISTINCT c.from_index AS bundle_index, c.to_index AS ref_index
+    FROM connections c
+    JOIN native_objects b ON b.native_object_index = c.from_index AND b.native_type_name = 'AssetBundle'
+    WHERE c.from_kind = 'native_object' AND c.to_kind = 'native_object'
+      AND c.connection_type = 'native_connection' AND c.to_index <> c.from_index
+)
+SELECT
+    b.native_object_index,
+    b.name,
+    b.size_bytes AS bundle_size_bytes,
+    b.resident_size_bytes AS bundle_resident_bytes,
+    b.is_destroyed,
+    COUNT(DISTINCT r.ref_index) AS referenced_object_count,
+    COUNT(DISTINCT o.native_type_name) AS referenced_type_count,
+    COALESCE(SUM(o.size_bytes), 0) AS referenced_size_bytes,
+    COALESCE(SUM(o.resident_size_bytes), 0) AS referenced_resident_bytes,
+    (COUNT(DISTINCT r.ref_index) > 0) AS references_loaded_assets
+FROM native_objects b
+LEFT JOIN refs r ON r.bundle_index = b.native_object_index
+LEFT JOIN native_objects o ON o.native_object_index = r.ref_index
+WHERE b.native_type_name = 'AssetBundle'
+GROUP BY b.native_object_index, b.name, b.size_bytes, b.resident_size_bytes, b.is_destroyed;
 """;
 }
 

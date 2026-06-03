@@ -76,6 +76,9 @@ public static class SummaryReportFormatter
         if (info.SnapFormatVersion > 0)
             AppendField(sb, "Snap format", $"v{info.SnapFormatVersion}");
 
+        if (!string.IsNullOrWhiteSpace(report.SchemaVersion))
+            AppendField(sb, "Schema", report.SchemaVersion);
+
         if (info.SessionGuid != 0)
             AppendField(sb, "Session", info.SessionGuid.ToString(CultureInfo.InvariantCulture));
     }
