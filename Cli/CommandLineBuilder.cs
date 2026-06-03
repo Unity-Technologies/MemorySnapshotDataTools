@@ -14,7 +14,8 @@ internal static class CommandLineBuilder
         Func<CliOptions, int> runReport,
         Func<CliOptions, int> runMultiReport,
         Func<CliOptions, int> runValidateGolden,
-        Func<CliOptions, int> runSummary)
+        Func<CliOptions, int> runSummary,
+        Func<CliOptions, int> runUpgrade)
     {
         var root = new RootCommand("Export Unity memory snapshots to DuckDB or SQLite and generate HTML reports.");
 
@@ -342,12 +343,40 @@ internal static class CommandLineBuilder
             return runSummary(options);
         });
 
+        // ---- upgrade ----
+        var upgradeCmd = new Command(
+            "upgrade",
+            "Upgrade an exported database's analysis views/indexes to the current minor schema version (in place; no re-export).");
+        var upgradeDatabaseArg = new Argument<string>("database")
+        {
+            Description = "Path to the exported database (.duckdb or .db) to upgrade.",
+            Arity = ArgumentArity.ExactlyOne,
+        };
+        upgradeCmd.Add(upgradeDatabaseArg);
+
+        upgradeCmd.SetAction((ParseResult parseResult) =>
+        {
+            var dbPath = ExpandPath(parseResult.GetValue(upgradeDatabaseArg)!);
+            if (!File.Exists(dbPath))
+            {
+                Console.Error.WriteLine($"Database file not found: {dbPath}");
+                return 1;
+            }
+            var options = new CliOptions
+            {
+                Command = CommandKind.Upgrade,
+                UpgradeDbPath = dbPath,
+            };
+            return runUpgrade(options);
+        });
+
         root.Add(exportCmd);
         root.Add(batchExportCmd);
         root.Add(reportCmd);
         root.Add(multiReportCmd);
         root.Add(validateCmd);
         root.Add(summaryCmd);
+        root.Add(upgradeCmd);
         return root;
     }
 

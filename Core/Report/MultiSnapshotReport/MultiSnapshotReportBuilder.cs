@@ -77,7 +77,7 @@ public static class MultiSnapshotReportBuilder
         var snapshotMeta = QuerySnapshotMetadata(connection, isDuckDb: true);
         var nativeTypes = QueryNativeTypes(connection, isDuckDb: true);
         var remapperRoots = QueryRemapperRoots(connection, isDuckDb: true);
-        return BuildRow(dbPath, nativeTypes, remapperRoots, snapshotMeta);
+        return BuildRow(dbPath, nativeTypes, remapperRoots, snapshotMeta, DatabaseSchemaInfo.ReadVersion(connection));
     }
 
     private static SnapshotMetricsRow QuerySqlite(string dbPath)
@@ -89,7 +89,7 @@ public static class MultiSnapshotReportBuilder
         var snapshotMeta = QuerySnapshotMetadata(connection, isDuckDb: false);
         var nativeTypes = QueryNativeTypes(connection, isDuckDb: false);
         var remapperRoots = QueryRemapperRoots(connection, isDuckDb: false);
-        return BuildRow(dbPath, nativeTypes, remapperRoots, snapshotMeta);
+        return BuildRow(dbPath, nativeTypes, remapperRoots, snapshotMeta, DatabaseSchemaInfo.ReadVersion(connection));
     }
 
     private static Dictionary<string, NativeTypeSnapshotMetrics> QueryNativeTypes(object connection, bool isDuckDb)
@@ -262,7 +262,8 @@ public static class MultiSnapshotReportBuilder
         string dbPath,
         Dictionary<string, NativeTypeSnapshotMetrics> nativeTypes,
         List<NativeRootSnapshotMetrics> remapperRoots,
-        DbSnapshotMetadata dbMeta)
+        DbSnapshotMetadata dbMeta,
+        (int Major, int Minor) schemaVersion)
     {
         var fileName = Path.GetFileNameWithoutExtension(dbPath);
         var meta = EnrichMetadata(dbPath, fileName, dbMeta);
@@ -283,6 +284,8 @@ public static class MultiSnapshotReportBuilder
             SortTimestamp = meta.SortTimestamp,
             NativeTypes = nativeTypes,
             RemapperRoots = remapperRoots,
+            SchemaVersion = DatabaseSchemaInfo.DescribeVersion(schemaVersion.Major, schemaVersion.Minor),
+            SchemaUpToDate = DatabaseSchemaInfo.Evaluate(schemaVersion.Major, schemaVersion.Minor) == SchemaAction.None,
         };
 
         row = row with { SessionKey = MultiSnapshotSessionGrouper.BuildClusterKey(row) };

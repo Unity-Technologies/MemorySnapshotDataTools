@@ -67,4 +67,10 @@ public sealed class SnapshotInfo
 
     /// <summary>Capture timestamp (UTC ISO-8601), when known.</summary>
     public string RecordDateUtc { get; set; } = string.Empty;
+
+    /// <summary>
+    /// OS memory page size in bytes for the captured device (from <c>SystemMemoryResidentPages_PageSize</c>;
+    /// e.g. 16384 on iOS arm64, 4096 elsewhere). Zero when unknown (format &lt; 17 / no resident page data).
+    /// </summary>
+    public ulong PageSize { get; set; }
 }

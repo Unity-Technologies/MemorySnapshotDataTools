@@ -57,6 +57,7 @@ public sealed class SummaryReportFormatterTests
                 new UnityObjectCategory { TypeName = "Mesh", Count = 567, AllocatedBytes = 120_000_000 },
             ],
             SummaryAvailable = true,
+            SchemaVersion = "1.1",
         };
     }
 
@@ -69,6 +70,7 @@ public sealed class SummaryReportFormatterTests
         Assert.Contains("Game_IOS.snap (snapshot)", text, StringComparison.Ordinal);
         Assert.Contains("iOS (IPhonePlayer)", text, StringComparison.Ordinal);
         Assert.Contains("v17", text, StringComparison.Ordinal);
+        Assert.Contains("Schema      : 1.1", text, StringComparison.Ordinal);
         Assert.Contains("Allocated Memory Distribution", text, StringComparison.Ordinal);
         Assert.Contains("Managed Heap Utilization", text, StringComparison.Ordinal);
         Assert.Contains("Top Unity Object Categories", text, StringComparison.Ordinal);

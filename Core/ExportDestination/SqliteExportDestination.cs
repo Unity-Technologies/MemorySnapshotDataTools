@@ -27,4 +27,8 @@ internal sealed class SqliteExportDestination : IExportDestinationWriter
     /// <inheritdoc/>
     public void Validate(string dbPath, RawSnapshotData rawData, ValidationMode mode)
         => SqliteWriter.Validate(dbPath, rawData, mode);
+
+    /// <inheritdoc/>
+    public void UpgradeSchema(string dbPath)
+        => SqliteWriter.UpgradeSchema(dbPath);
 }

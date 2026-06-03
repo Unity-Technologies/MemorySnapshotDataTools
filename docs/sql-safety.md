@@ -3,7 +3,7 @@
 This tool is built around composing and executing SQL against DuckDB and SQLite databases.
 This page is the canonical reference for writing query code safely. It is written for both
 human contributors and for Claude (the project rule lives in
-[`CLAUDE.md`](https://github.com/Unity-Technologies/cse-memory-snapshot-data-tool/blob/main/CLAUDE.md)
+[`CLAUDE.md`](https://github.com/Unity-Technologies/MemorySnapshotDataTools/blob/main/CLAUDE.md)
 and points here).
 
 ## The one rule

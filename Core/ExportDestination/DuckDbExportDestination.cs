@@ -44,14 +44,25 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
         // Create schema
         Exec(connection, SchemaTablesScript);
 
+        // Record the schema version so consumers can detect when a re-export is needed.
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "INSERT INTO schema_meta(schema_version_major, schema_version_minor, msdt_version, created_at_utc) VALUES (?, ?, ?, ?);";
+            cmd.Parameters.Add(new DuckDBParameter { Value = DatabaseSchemaInfo.SchemaMajor });
+            cmd.Parameters.Add(new DuckDBParameter { Value = DatabaseSchemaInfo.SchemaMinor });
+            cmd.Parameters.Add(new DuckDBParameter { Value = DatabaseSchemaInfo.ToolVersion });
+            cmd.Parameters.Add(new DuckDBParameter { Value = DateTime.UtcNow.ToString("O") });
+            cmd.ExecuteNonQuery();
+        }
+
         // Insert snapshot_info using positional parameters (DuckDB uses ? placeholders)
         using (var cmd = connection.CreateCommand())
         {
             cmd.CommandText = """
                 INSERT INTO snapshot_info(
                     snapshot_path, exported_at_utc, unity_version,
-                    snap_format_version, session_guid, product_name, platform, record_date_utc)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                    snap_format_version, session_guid, product_name, platform, record_date_utc, page_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """;
             cmd.Parameters.Add(new DuckDBParameter { Value = snapshotInfo.SnapshotPath });
             cmd.Parameters.Add(new DuckDBParameter { Value = snapshotInfo.ExportedAtUtc });
@@ -64,6 +75,7 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
             cmd.Parameters.Add(new DuckDBParameter { Value = string.IsNullOrEmpty(snapshotInfo.ProductName) ? (object)DBNull.Value : snapshotInfo.ProductName });
             cmd.Parameters.Add(new DuckDBParameter { Value = string.IsNullOrEmpty(snapshotInfo.Platform) ? (object)DBNull.Value : snapshotInfo.Platform });
             cmd.Parameters.Add(new DuckDBParameter { Value = string.IsNullOrEmpty(snapshotInfo.RecordDateUtc) ? (object)DBNull.Value : snapshotInfo.RecordDateUtc });
+            cmd.Parameters.Add(new DuckDBParameter { Value = snapshotInfo.PageSize == 0 ? (object)DBNull.Value : unchecked((long)snapshotInfo.PageSize) });
             cmd.ExecuteNonQuery();
         }
         state.AddWritten(1);
@@ -254,6 +266,7 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
 
         var indexSw = Stopwatch.StartNew();
         Exec(connection, CreateIndexesScript);
+        Exec(connection, CreateViewsScript);
         indexSw.Stop();
         stats.IndexBuildMs = indexSw.ElapsedMilliseconds;
 
@@ -394,6 +407,27 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
 
     #endregion
 
+    #region UpgradeSchema
+
+    /// <inheritdoc/>
+    public void UpgradeSchema(string dbPath)
+    {
+        using var connection = new DuckDBConnection($"Data Source={dbPath}");
+        connection.Open();
+
+        // Indexes use IF NOT EXISTS and views use CREATE OR REPLACE, so both scripts are re-runnable.
+        Exec(connection, CreateIndexesScript);
+        Exec(connection, CreateViewsScript);
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "UPDATE schema_meta SET schema_version_minor = ?, msdt_version = ?;";
+        cmd.Parameters.Add(new DuckDBParameter { Value = DatabaseSchemaInfo.SchemaMinor });
+        cmd.Parameters.Add(new DuckDBParameter { Value = DatabaseSchemaInfo.ToolVersion });
+        cmd.ExecuteNonQuery();
+    }
+
+    #endregion
+
     #region Helpers
 
     private static void Exec(DuckDBConnection connection, string sql)
@@ -424,6 +458,13 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
     // (DuckDB Appender reads raw bytes; passing int to BIGINT column corrupts data).
     // int  → INTEGER (32-bit), long/ulong-cast → BIGINT (64-bit).
     private const string SchemaTablesScript = """
+CREATE OR REPLACE TABLE schema_meta (
+    schema_version_major INTEGER NOT NULL,
+    schema_version_minor INTEGER NOT NULL,
+    msdt_version VARCHAR,
+    created_at_utc VARCHAR NOT NULL
+);
+
 CREATE OR REPLACE TABLE snapshot_info (
     snapshot_path VARCHAR NOT NULL,
     exported_at_utc VARCHAR NOT NULL,
@@ -432,7 +473,8 @@ CREATE OR REPLACE TABLE snapshot_info (
     session_guid BIGINT,
     product_name VARCHAR,
     platform VARCHAR,
-    record_date_utc VARCHAR
+    record_date_utc VARCHAR,
+    page_size BIGINT
 );
 
 CREATE OR REPLACE TABLE native_objects (
@@ -512,15 +554,137 @@ CREATE OR REPLACE TABLE summary_metrics (
 );
 """;
 
+    // CREATE INDEX IF NOT EXISTS so this script is idempotent and re-runnable by the in-place
+    // schema upgrade path (UpgradeSchema), not just on a fresh export.
     private const string CreateIndexesScript = """
-CREATE INDEX idx_connections_from ON connections(from_kind, from_index);
-CREATE INDEX idx_connections_to ON connections(to_kind, to_index);
-CREATE INDEX idx_native_objects_instance_id ON native_objects(instance_id);
-CREATE INDEX idx_native_objects_is_destroyed ON native_objects(is_destroyed);
-CREATE INDEX idx_managed_objects_address ON managed_objects(address);
-CREATE INDEX idx_memory_regions_address_base ON memory_regions(address_base);
-CREATE INDEX idx_native_allocations_address ON native_allocations(address);
-CREATE INDEX idx_native_allocations_region ON native_allocations(memory_region_index);
+CREATE INDEX IF NOT EXISTS idx_connections_from ON connections(from_kind, from_index);
+CREATE INDEX IF NOT EXISTS idx_connections_to ON connections(to_kind, to_index);
+CREATE INDEX IF NOT EXISTS idx_native_objects_instance_id ON native_objects(instance_id);
+CREATE INDEX IF NOT EXISTS idx_native_objects_is_destroyed ON native_objects(is_destroyed);
+CREATE INDEX IF NOT EXISTS idx_managed_objects_address ON managed_objects(address);
+CREATE INDEX IF NOT EXISTS idx_memory_regions_address_base ON memory_regions(address_base);
+CREATE INDEX IF NOT EXISTS idx_native_allocations_address ON native_allocations(address);
+CREATE INDEX IF NOT EXISTS idx_native_allocations_region ON native_allocations(memory_region_index);
+CREATE INDEX IF NOT EXISTS idx_system_memory_regions_address ON system_memory_regions(address);
+""";
+
+    // Analysis views and table macros. See docs/database-schema.md for the full reference.
+    // The Exec helper splits this on ';', so each statement is terminated with ';' and must contain
+    // no embedded semicolons. DuckDB-only constructs: ASOF JOIN (fast address-range containment) and
+    // table macros (parameterized views). The SQLite equivalents live in SqliteWriter.
+    private const string CreateViewsScript = """
+CREATE OR REPLACE VIEW v_allocation_enriched AS
+SELECT
+    a.allocation_index,
+    a.address,
+    a.size_bytes,
+    a.overhead_size_bytes,
+    a.padding_size_bytes,
+    a.memory_region_index,
+    mr.name AS unity_region_name,
+    CASE WHEN a.address < s.address + s.size_bytes THEN s.region_index END AS system_region_index,
+    CASE WHEN a.address < s.address + s.size_bytes THEN s.name END AS system_region_name,
+    a.root_reference_id,
+    rt.area_name,
+    rt.object_name AS root_object_name,
+    o.native_object_index,
+    o.native_type_name,
+    o.name AS object_name
+FROM native_allocations a
+LEFT JOIN memory_regions mr ON mr.region_index = a.memory_region_index
+ASOF LEFT JOIN system_memory_regions s ON a.address >= s.address
+LEFT JOIN native_roots rt ON rt.root_id = a.root_reference_id
+LEFT JOIN native_objects o ON o.root_reference_id = a.root_reference_id;
+
+CREATE OR REPLACE VIEW v_system_region_summary AS
+SELECT
+    s.region_index,
+    s.name,
+    printf('0x%x', s.address) AS addr_hex,
+    s.size_bytes AS committed_bytes,
+    s.resident_bytes,
+    ROUND(100.0 * s.resident_bytes / NULLIF(s.size_bytes, 0), 1) AS pct_resident,
+    COUNT(a.allocation_index) AS unity_alloc_count,
+    COALESCE(SUM(a.size_bytes), 0) AS unity_live_bytes,
+    ROUND(100.0 * COALESCE(SUM(a.size_bytes), 0) / NULLIF(s.resident_bytes, 0), 1) AS unity_live_pct_of_resident
+FROM system_memory_regions s
+LEFT JOIN native_allocations a
+       ON a.address >= s.address AND a.address < s.address + s.size_bytes
+GROUP BY s.region_index, s.name, s.address, s.size_bytes, s.resident_bytes;
+
+CREATE OR REPLACE VIEW v_region_owner_breakdown AS
+SELECT
+    system_region_name,
+    COALESCE(native_type_name, area_name, '(untracked/no-root)') AS owner,
+    COUNT(*) AS alloc_count,
+    SUM(size_bytes) AS live_bytes
+FROM v_allocation_enriched
+GROUP BY 1, 2;
+
+CREATE OR REPLACE VIEW v_connection_edges AS
+SELECT
+    c.connection_type,
+    c.from_kind,
+    c.from_index,
+    COALESCE(fno.native_type_name, fmo.managed_type_name) AS from_type,
+    fno.name AS from_name,
+    c.to_kind,
+    c.to_index,
+    COALESCE(tno.native_type_name, tmo.managed_type_name) AS to_type,
+    tno.name AS to_name
+-- The kind check is folded into the join KEY (CASE expr, where NULL never matches) rather than AND'd
+-- into the ON clause. A constant predicate inside a LEFT JOIN ON forces DuckDB into a quadratic
+-- BLOCKWISE_NL_JOIN over millions of edges, whereas a pure equi-key lets it hash-join. The native and
+-- managed object index spaces overlap, so the kind guard is required for correctness.
+FROM connections c
+LEFT JOIN native_objects  fno ON fno.native_object_index  = (CASE WHEN c.from_kind = 'native_object'  THEN c.from_index END)
+LEFT JOIN managed_objects fmo ON fmo.managed_object_index = (CASE WHEN c.from_kind = 'managed_object' THEN c.from_index END)
+LEFT JOIN native_objects  tno ON tno.native_object_index  = (CASE WHEN c.to_kind   = 'native_object'  THEN c.to_index   END)
+LEFT JOIN managed_objects tmo ON tmo.managed_object_index = (CASE WHEN c.to_kind   = 'managed_object' THEN c.to_index   END);
+
+CREATE OR REPLACE VIEW v_assetbundle_utilization AS
+WITH refs AS (
+    SELECT DISTINCT c.from_index AS bundle_index, c.to_index AS ref_index
+    FROM connections c
+    JOIN native_objects b ON b.native_object_index = c.from_index AND b.native_type_name = 'AssetBundle'
+    WHERE c.from_kind = 'native_object' AND c.to_kind = 'native_object'
+      AND c.connection_type = 'native_connection' AND c.to_index <> c.from_index
+)
+SELECT
+    b.native_object_index,
+    b.name,
+    b.size_bytes AS bundle_size_bytes,
+    b.resident_size_bytes AS bundle_resident_bytes,
+    b.is_destroyed,
+    COUNT(DISTINCT r.ref_index) AS referenced_object_count,
+    COUNT(DISTINCT o.native_type_name) AS referenced_type_count,
+    COALESCE(SUM(o.size_bytes), 0) AS referenced_size_bytes,
+    COALESCE(SUM(o.resident_size_bytes), 0) AS referenced_resident_bytes,
+    (COUNT(DISTINCT r.ref_index) > 0) AS references_loaded_assets
+FROM native_objects b
+LEFT JOIN refs r ON r.bundle_index = b.native_object_index
+LEFT JOIN native_objects o ON o.native_object_index = r.ref_index
+WHERE b.native_type_name = 'AssetBundle'
+GROUP BY b.native_object_index, b.name, b.size_bytes, b.resident_size_bytes, b.is_destroyed;
+
+CREATE OR REPLACE MACRO region_allocations(region_name) AS TABLE
+    SELECT * FROM v_allocation_enriched WHERE system_region_name = region_name;
+
+CREATE OR REPLACE MACRO region_page_density(region_name) AS TABLE
+SELECT COUNT(*) AS touched_pages,
+       COUNT(*) * MAX(page_bytes) AS touched_bytes,
+       ROUND(AVG(used), 0) AS avg_live_bytes_per_page,
+       ROUND(100.0 * AVG(used) / MAX(page_bytes), 1) AS avg_fill_pct,
+       ROUND(AVG(n), 1) AS avg_allocs_per_page
+FROM (
+    SELECT a.address // (SELECT COALESCE(NULLIF(page_size, 0), 16384) FROM snapshot_info LIMIT 1) AS page,
+           (SELECT COALESCE(NULLIF(page_size, 0), 16384) FROM snapshot_info LIMIT 1) AS page_bytes,
+           SUM(a.size_bytes) AS used, COUNT(*) AS n
+    FROM native_allocations a
+    JOIN system_memory_regions s
+      ON s.name = region_name AND a.address >= s.address AND a.address < s.address + s.size_bytes
+    GROUP BY 1, 2
+);
 """;
 
     #endregion

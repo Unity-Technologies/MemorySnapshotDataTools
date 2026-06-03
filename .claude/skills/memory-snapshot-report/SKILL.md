@@ -85,9 +85,13 @@ dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- report <path/to/o
 ### 4. Optional
 
 - Open the generated HTML file or DB in the user’s preferred viewer.
-- For ad-hoc SQL, use the same DB path; tables are `snapshot_info`, `native_objects`,
+- For ad-hoc SQL, use the same DB path; tables are `schema_meta`, `snapshot_info`, `native_objects`,
   `managed_objects`, `connections`, `native_roots`, `memory_regions`, `native_allocations`,
-  `system_memory_regions`, and `summary_metrics` (MemoryProfiler Summary-page breakdown).
+  `system_memory_regions`, and `summary_metrics` (MemoryProfiler Summary-page breakdown). Analysis
+  views (`v_allocation_enriched`, `v_system_region_summary`, `v_region_owner_breakdown`) and DuckDB
+  macros (`region_allocations`, `region_page_density`) simplify native-memory/region queries. For
+  schema details, join keys, and version compatibility, use the **`memory-db-sql`** skill and
+  [`docs/database-schema.md`](../../../docs/database-schema.md).
 
 ## Domain
 

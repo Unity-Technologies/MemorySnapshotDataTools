@@ -8,6 +8,9 @@ internal static class ReportSql
     /// <summary>Query for snapshot_info row (path, exported_at_utc, unity_version).</summary>
     public const string SnapshotInfo = "SELECT snapshot_path, exported_at_utc, unity_version FROM snapshot_info;";
 
+    /// <summary>Query for the stored schema version. Only run when the schema_meta table exists (use HasColumn first).</summary>
+    public const string SchemaMeta = "SELECT schema_version_major, schema_version_minor FROM schema_meta LIMIT 1;";
+
     public const string TableCounts = """
         SELECT 'native_objects'    AS table_name, COUNT(*) AS row_count FROM native_objects
         UNION ALL SELECT 'managed_objects', COUNT(*) FROM managed_objects
