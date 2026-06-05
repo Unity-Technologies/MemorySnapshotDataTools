@@ -92,6 +92,7 @@ internal static class Program
             NameFilter = options.MultiReportFilter,
             ReportOutputPath = options.ReportOutputPath,
             ReportTitle = options.ReportTitle,
+            GenerateReports = !options.MultiReportNoReports,
         };
         var progress = new ConsoleProgress(options.Verbose);
         return MultiSnapshotReportRunner.Run(multiOptions, progress);

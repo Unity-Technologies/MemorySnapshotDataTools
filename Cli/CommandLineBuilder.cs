@@ -243,11 +243,16 @@ internal static class CommandLineBuilder
         {
             Description = "Print progress and timings.",
         };
+        var multiNoReportsOpt = new Option<bool>("--no-reports")
+        {
+            Description = "Skip generating per-snapshot drill-down reports (faster; rows are not clickable).",
+        };
 
         multiReportCmd.Add(filterOpt);
         multiReportCmd.Add(multiOutOpt);
         multiReportCmd.Add(multiTitleOpt);
         multiReportCmd.Add(multiVerboseOpt);
+        multiReportCmd.Add(multiNoReportsOpt);
 
         multiReportCmd.SetAction((ParseResult parseResult) =>
         {
@@ -267,6 +272,7 @@ internal static class CommandLineBuilder
                 ReportOutputPath = string.IsNullOrWhiteSpace(outPath) ? null : ExpandPath(outPath!),
                 ReportTitle = parseResult.GetValue(multiTitleOpt)!,
                 Verbose = parseResult.GetValue(multiVerboseOpt),
+                MultiReportNoReports = parseResult.GetValue(multiNoReportsOpt),
             };
             return runMultiReport(options);
         });
