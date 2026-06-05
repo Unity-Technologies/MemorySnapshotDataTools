@@ -80,6 +80,12 @@ internal static class ReportRenderer
         .kv-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: .05em; }
         .kv-value { font-size: 15px; font-weight: 600; color: #1a1a2e; margin-top: 2px; }
         .kv-value.mono { font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 11px; font-weight: 400; color: #444; word-break: break-all; white-space: normal; }
+        /* When the viewport is too narrow for the fixed nav to sit in the right gutter (e.g. inside the
+           multi-report iframe drawer), drop it into normal flow at the top so it never overlaps content. */
+        @media (max-width: 1360px) {
+            nav { position: static; width: auto; max-width: 100%; max-height: 220px; margin: 0 0 20px; }
+            main { max-width: 100%; }
+        }
         """;
 
     /// <summary>Builds the full HTML document from the report model (nav, title, groups, sections).</summary>

@@ -30,6 +30,7 @@ internal sealed class CliOptions
     public bool ContinueOnError { get; set; } = true;
     public string MultiReportDirectory { get; set; } = string.Empty;
     public string? MultiReportFilter { get; set; }
+    public bool MultiReportNoReports { get; set; }
     public string GoldenPath { get; set; } = string.Empty;
     public string? ValidationOutputPath { get; set; }
     public string SummaryInputPath { get; set; } = string.Empty;

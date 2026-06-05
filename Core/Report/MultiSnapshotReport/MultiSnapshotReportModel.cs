@@ -86,6 +86,15 @@ public sealed record SnapshotMetricsRow
 
     /// <summary>Remapper / PMR root metrics (may be empty).</summary>
     public IReadOnlyList<NativeRootSnapshotMetrics> RemapperRoots { get; init; } = [];
+
+    /// <summary>
+    /// MemoryProfiler "Summary" page metrics (Allocated Memory Distribution totals/breakdown) read from
+    /// the database's <c>summary_metrics</c> table, or null when that table is absent (older export).
+    /// </summary>
+    public SummaryMetrics? Summary { get; init; }
+
+    /// <summary>True when the database had a <c>summary_metrics</c> table to read from.</summary>
+    public bool SummaryAvailable { get; init; }
 }
 
 /// <summary>
