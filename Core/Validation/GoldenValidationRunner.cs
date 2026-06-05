@@ -121,14 +121,16 @@ public static class GoldenValidationRunner
 
     private static ExportedMetrics QueryDuckDb(string databasePath)
     {
-        using var connection = new DuckDBConnection($"Data Source={databasePath}");
+        // Validation only reads; open read-only (defense-in-depth, per CLAUDE.md rule 5).
+        using var connection = new DuckDBConnection($"Data Source={databasePath};ACCESS_MODE=READ_ONLY");
         connection.Open();
         return Query(connection, isDuckDb: true);
     }
 
     private static ExportedMetrics QuerySqlite(string databasePath)
     {
-        using var connection = new SqliteConnection($"Data Source={databasePath}");
+        // Validation only reads; open read-only (defense-in-depth, per CLAUDE.md rule 5).
+        using var connection = new SqliteConnection($"Data Source={databasePath};Mode=ReadOnly");
         connection.Open();
         return Query(connection, isDuckDb: false);
     }

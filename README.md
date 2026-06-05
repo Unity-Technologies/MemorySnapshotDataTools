@@ -4,8 +4,15 @@ Single CLI to **export** Unity memory snapshots (`.snap`) to DuckDB or SQLite an
 
 ## What it does
 
-- **Export:** Reads a `.snap` file, parses and extracts snapshot data, and writes it to a DuckDB (default) or SQLite file.
-- **Report:** Connects to an exported database (DuckDB or SQLite), runs report queries, and produces a self-contained HTML report with sortable tables.
+The tool is a single CLI with these commands:
+
+- **`export`:** Read a `.snap` file, parse and extract its data, and write it to a DuckDB (default) or SQLite database.
+- **`batch-export`:** Export every `.snap` in a directory to its own database with the same basename.
+- **`report`:** Run report queries against one exported database and produce a self-contained HTML report with sortable tables.
+- **`multi-report`:** Produce a single HTML report comparing multiple exported databases in a directory.
+- **`validate`:** Compare an exported database against a Unity golden JSON file.
+- **`summary`:** Print a high-level memory-usage summary for a `.snap` or database (writes no database).
+- **`upgrade`:** Upgrade an exported database's analysis views/indexes to the current schema version, in place.
 
 ## Prerequisites
 
@@ -19,18 +26,23 @@ Single CLI to **export** Unity memory snapshots (`.snap`) to DuckDB or SQLite an
 
 ## How to use
 
-Use the **MemorySnapshotDataTools** directory as the project root. Run the CLI with the Cli project:
+Build a Release binary once, then add its output directory to your `PATH` so you can invoke `MemorySnapshotDataTools` directly:
 
 ```bash
-dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- <command> [args...]
+dotnet build -c Release
+# Add the build output to PATH. <RID> is your runtime: osx-arm64, osx-x64, linux-x64, or win-x64.
+export PATH="$PATH:$(pwd)/Cli/bin/Release/net10.0/<RID>"
+MemorySnapshotDataTools <command> [args...]
 ```
 
-Or from the `Cli` directory: `dotnet run -- <command> [args...]`.
+Add that `export PATH=...` line to your shell profile to make it permanent. All examples below use `MemorySnapshotDataTools <command>`.
+
+> Working from source without installing? Run `dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- <command>` from the repo root instead.
 
 ### Export a snapshot to a database
 
 ```bash
-dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- export <path/to/snapshot.snap> <path/to/output.duckdb> [options]
+MemorySnapshotDataTools export <path/to/snapshot.snap> <path/to/output.duckdb> [options]
 ```
 
 - Use a `.duckdb` extension for DuckDB (default) or `.db` for SQLite.
@@ -39,19 +51,37 @@ dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- export <path/to/s
 **Example (DuckDB):**
 
 ```bash
-dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- export ./memory.snap ./out.duckdb --validate minimal --verbose
+MemorySnapshotDataTools export ./memory.snap ./out.duckdb --validate minimal --verbose
 ```
 
 **Example (SQLite):**
 
 ```bash
-dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- export ./memory.snap ./out.db --destination sqlite --validate minimal --verbose
+MemorySnapshotDataTools export ./memory.snap ./out.db --destination sqlite --validate minimal --verbose
+```
+
+### Batch-export a directory of snapshots
+
+```bash
+MemorySnapshotDataTools batch-export <path/to/directory> [options]
+```
+
+- Exports every top-level `.snap` in the directory to a `.duckdb`/`.db` file with the same basename.
+- **`--filter <substr>`:** case-insensitive substring filter on snapshot filenames (e.g. `MyGame`).
+- **`--skip-existing`:** skip a file when its output database exists and is newer than the `.snap`.
+- **`--continue-on-error`:** keep going after a single-file failure (default: `true`).
+- Also accepts the same `--destination`, `--validate`, `--batch-size`, `--queue-capacity`, and `--verbose` options as `export`.
+
+**Example:**
+
+```bash
+MemorySnapshotDataTools batch-export ./captures --filter MyGame --skip-existing --verbose
 ```
 
 ### Generate a report from a database
 
 ```bash
-dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- report <path/to/database.duckdb|.db> [--out report.html] [options]
+MemorySnapshotDataTools report <path/to/database.duckdb|.db> [--out report.html] [options]
 ```
 
 - **`--out`** path: where to write the HTML file. If omitted, writes to a temp file and opens it in the browser.
@@ -61,7 +91,73 @@ dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- report <path/to/d
 **Example:**
 
 ```bash
-dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- report ./out.duckdb --out report.html --verbose
+MemorySnapshotDataTools report ./out.duckdb --out report.html --verbose
+```
+
+### Generate a report across multiple databases
+
+```bash
+MemorySnapshotDataTools multi-report <path/to/directory> [--out report.html] [options]
+```
+
+- Builds one HTML report comparing every `.duckdb`/`.db` snapshot database in the directory.
+- **`--filter <substr>`:** case-insensitive substring filter on database filenames (e.g. `MyGame`).
+- **`--out`** path: where to write the HTML file. If omitted, writes to a temp file and opens it in the browser.
+- **`--title "Title"`:** report title (default: "Multi-Snapshot Memory Report").
+- **`--no-reports`:** skip generating per-snapshot drill-down reports (faster; rows are not clickable).
+- **`--verbose`:** print progress and timings.
+
+**Example:**
+
+```bash
+MemorySnapshotDataTools multi-report ./databases --out multi.html --verbose
+```
+
+### Validate an export against Unity golden values
+
+```bash
+MemorySnapshotDataTools validate <path/to/*_golden.json> <path/to/database.duckdb|.db> [--out result.json]
+```
+
+- Compares the exported database against a `*_golden.json` produced by Unity's GoldenValueExtractor.
+- **`--out`** path: where to write the validation result JSON (default: next to the golden file).
+- Exit codes: `0` = passed, `1` = metric mismatch(es), `3` = error.
+- For the full workflow — extracting the golden file in Unity, what each metric compares, and the
+  tolerances — see [docs/golden-validation.md](docs/golden-validation.md).
+
+**Example:**
+
+```bash
+MemorySnapshotDataTools validate ./memory_golden.json ./out.duckdb
+```
+
+### Print a memory-usage summary
+
+```bash
+MemorySnapshotDataTools summary <path/to/snapshot.snap | database.duckdb|.db> [--verbose]
+```
+
+- Prints a high-level memory breakdown to the console. Accepts **either** a `.snap` snapshot or an exported database, and writes **no** database. (Decoding a raw `.snap` is slower than reading a database.)
+- **`--verbose`:** print progress while decoding a snapshot.
+
+**Example:**
+
+```bash
+MemorySnapshotDataTools summary ./out.duckdb
+```
+
+### Upgrade a database's schema in place
+
+```bash
+MemorySnapshotDataTools upgrade <path/to/database.duckdb|.db>
+```
+
+- Upgrades an exported database's analysis views/indexes to the current minor schema version, in place — no re-export needed. If the database's major version is behind, it reports that a re-export is required instead.
+
+**Example:**
+
+```bash
+MemorySnapshotDataTools upgrade ./out.duckdb
 ```
 
 ## Output
@@ -93,7 +189,7 @@ dotnet build
 dotnet test
 ```
 
-To run the CLI: `dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj --` or publish the Cli project (see below).
+To run the CLI after building, put `Cli/bin/Release/net10.0/<RID>` on your `PATH` (see [How to use](#how-to-use)), or publish the Cli project (see below).
 
 ## Publish (versioned artifacts)
 
@@ -101,4 +197,4 @@ From the project root, run `./publish.sh` (macOS/Linux) or `./publish.ps1` (Wind
 
 ## AI IDE integration
 
-A project skill for Cursor (and similar AI IDEs) is in `.cursor/skills/memory-snapshot-report/`. It describes the export and report workflow and when to use it.
+Project skills for Claude (and similar AI IDEs) are in `.claude/skills/**`.

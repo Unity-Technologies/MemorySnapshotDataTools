@@ -50,6 +50,10 @@ dotnet run --project Cli/MemorySnapshotDataTools.Cli.csproj -- batch-export <dir
 
 ### 2. Validate export against Unity golden JSON
 
+For the full validation workflow (extracting golden values in Unity, every compared metric,
+tolerances, and failure formats) use the **`validate-golden`** skill and
+[`docs/golden-validation.md`](../../../docs/golden-validation.md). Quick path:
+
 The golden extractor lives in the `com.unity.memory-snapshot-data-tools` package under
 `UnityPackage/` in this repo, imported into a Unity project via a local `file:` path in that
 project's `Packages/manifest.json`. After extracting `*_golden.json` in Unity
