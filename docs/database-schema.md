@@ -40,6 +40,7 @@ Reset minor to 0 whenever you bump major.
 | 1.0 | First versioned schema: `schema_meta`, `snapshot_info.page_size`, region analysis views/macros. |
 | 1.1 | Added `v_connection_edges` and `v_assetbundle_utilization` views (minor — upgradeable in place). |
 | 1.2 | Reformulated `v_connection_edges` joins (kind check folded into the join key) so DuckDB hash-joins instead of nested-loop — `SELECT … WHERE from_type=…` drops from minutes to sub-second (minor). |
+| 1.3 | Added `v_assetbundle_loaded_assets` view — one row per (AssetBundle, loaded native object) it references (minor — upgradeable in place). |
 
 **What the CLI does.** Before a read command (`report`, `summary`, `validate`),
 `DatabaseSchemaInfo.Evaluate(major, minor)` classifies the database and the CLI acts:
@@ -58,8 +59,16 @@ MemorySnapshotDataTools upgrade <database.duckdb|.db>
 ```
 
 This re-applies indexes and views (`DatabaseMaintenance.UpgradeInPlace`) and bumps the stored minor
-version. It refuses major-version gaps and tells you to re-export instead. Non-interactive sessions
-(stdin redirected) never auto-modify a database — they only print the advisory and command.
+version, then lists which schema versions were applied (from `DatabaseSchemaInfo.ChangesSince`, the
+same per-version summaries as the [version table](#schema-version) below). It refuses major-version
+gaps and tells you to re-export instead. Non-interactive sessions (stdin redirected) never auto-modify
+a database — they only print the advisory and command.
+
+```text
+Upgraded database schema from v1.2 to v1.3.
+Applied (views/indexes re-created):
+  • v1.3: Added v_assetbundle_loaded_assets view (the assets each AssetBundle keeps loaded).
+```
 
 The stored version is also **displayed in output**: `summary` prints a `Schema` field, the HTML
 `report` shows a *Schema Version* row in Snapshot Info, and `multi-report` shows it per database
@@ -287,6 +296,49 @@ WHERE references_loaded_assets ORDER BY referenced_object_count DESC;
 > `referenced_size_bytes` is the **own size of directly-referenced** native objects. Unity records
 > flattened bundle→contained-object edges, so this is comprehensive for bundles; it is not transitive
 > retained size, and the same shared asset may be counted under more than one bundle.
+
+### `v_assetbundle_loaded_assets` (view)
+The **exploded, per-asset companion** to `v_assetbundle_utilization`: one row per *(AssetBundle, loaded
+native object)* pair — i.e. every asset an `AssetBundle` keeps loaded in memory, attributed to the
+bundle that references it. Use it to **list the actual assets** held by bundles (the utilization view
+only counts/sums them per bundle). It applies the **same edge filter** as `v_assetbundle_utilization`
+(`native_object → native_object` `native_connection` edges with `to_index <> from_index`), so the
+bundle's own native self-reference and its managed wrapper(s) are excluded — every row is a genuine
+*other* loaded asset, with no magic numbers. A bundle that holds nothing (an "empty" bundle) produces
+**no rows** here. A shared asset referenced by N bundles appears in N rows.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `bundle_index` | INTEGER | The `AssetBundle`'s `native_objects.native_object_index`. |
+| `bundle_name` | VARCHAR | The bundle's object name. |
+| `bundle_size_bytes` | BIGINT | The bundle object's own native size. |
+| `bundle_resident_bytes` | BIGINT | The bundle's resident bytes (format ≥ 17), else NULL. |
+| `asset_index` | INTEGER | The loaded object's `native_objects.native_object_index`. |
+| `asset_name` | VARCHAR | The loaded object's name. |
+| `asset_type_name` | VARCHAR | The loaded object's native type (e.g. `Texture2D`, `Mesh`). |
+| `asset_size_bytes` | BIGINT | The loaded object's own native size. |
+| `asset_resident_bytes` | BIGINT | The loaded object's resident bytes (format ≥ 17), else NULL. |
+| `asset_is_destroyed` | BOOLEAN | Loaded object marked destroyed but still resident. |
+
+```sql
+-- Every asset a specific bundle keeps loaded, biggest first.
+SELECT asset_type_name, asset_name, ROUND(asset_size_bytes / 1048576.0, 2) AS asset_mb
+FROM v_assetbundle_loaded_assets
+WHERE bundle_name = 'characters' ORDER BY asset_size_bytes DESC;
+
+-- What kinds of assets do bundles pull into memory, and how much?
+SELECT asset_type_name, COUNT(*) AS assets,
+       ROUND(SUM(asset_size_bytes) / 1048576.0, 1) AS total_mb
+FROM v_assetbundle_loaded_assets GROUP BY 1 ORDER BY total_mb DESC;
+
+-- Assets shared across multiple bundles (counted under each).
+SELECT asset_name, asset_type_name, COUNT(DISTINCT bundle_index) AS bundles
+FROM v_assetbundle_loaded_assets GROUP BY 1, 2 HAVING bundles > 1 ORDER BY bundles DESC;
+```
+
+> Like `v_assetbundle_utilization`, this reflects Unity's flattened bundle→contained-object edges:
+> it is the set of **directly-referenced** loaded objects (comprehensive for bundles), not transitive
+> retained reachability, and `asset_size_bytes` is each object's **own** size.
 
 ### `region_allocations(region_name)` (DuckDB macro)
 All `v_allocation_enriched` rows for one OS region: `SELECT * FROM region_allocations('MALLOC_NANO');`

@@ -60,7 +60,7 @@ public static class DatabaseSchemaInfo
     public const int SchemaMajor = 1;
 
     /// <summary>Current minor schema version (views/indexes). A lower minor can be upgraded in place.</summary>
-    public const int SchemaMinor = 2;
+    public const int SchemaMinor = 3;
 
     /// <summary>Name used in advisories to refer to the CLI tool.</summary>
     public const string ToolName = "MemorySnapshotDataTools";
@@ -70,6 +70,42 @@ public static class DatabaseSchemaInfo
         typeof(DatabaseSchemaInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
         ?? typeof(DatabaseSchemaInfo).Assembly.GetName().Version?.ToString()
         ?? "unknown";
+
+    /// <summary>
+    /// Version-by-version summary of what each schema version introduced, mirroring the version table
+    /// in <c>docs/database-schema.md</c>. Ordered oldest → newest. Used by <see cref="ChangesSince"/>
+    /// so the <c>upgrade</c> command can tell the user exactly what an in-place upgrade applied. Add a
+    /// row here whenever you bump <see cref="SchemaMajor"/> or <see cref="SchemaMinor"/>.
+    /// </summary>
+    public static readonly IReadOnlyList<(int Major, int Minor, string Summary)> Changelog = new[]
+    {
+        (1, 0, "Initial versioned schema: schema_meta, page_size, region analysis views/macros."),
+        (1, 1, "Added v_connection_edges and v_assetbundle_utilization views."),
+        (1, 2, "Reformulated v_connection_edges joins so filtered queries hash-join (much faster)."),
+        (1, 3, "Added v_assetbundle_loaded_assets view (the assets each AssetBundle keeps loaded)."),
+    };
+
+    /// <summary>
+    /// The <see cref="Changelog"/> summaries for every schema version newer than the supplied
+    /// (<paramref name="major"/>, <paramref name="minor"/>) up to and including this build's version,
+    /// each prefixed with its version (e.g. <c>"v1.3: …"</c>). Describes what an in-place upgrade from
+    /// the stored version applied; empty when nothing newer exists.
+    /// </summary>
+    /// <param name="major">The database's stored major version.</param>
+    /// <param name="minor">The database's stored minor version.</param>
+    public static IReadOnlyList<string> ChangesSince(int major, int minor)
+    {
+        var changes = new List<string>();
+        foreach (var (m, n, summary) in Changelog)
+        {
+            var newerThanStored = m > major || (m == major && n > minor);
+            var atMostCurrent = m < SchemaMajor || (m == SchemaMajor && n <= SchemaMinor);
+            if (newerThanStored && atMostCurrent)
+                changes.Add($"v{m}.{n}: {summary}");
+        }
+
+        return changes;
+    }
 
     /// <summary>Classifies a database's stored (major, minor) version against this build.</summary>
     /// <param name="major">Value from <c>schema_meta.schema_version_major</c>, or 0 if the table is absent.</param>
