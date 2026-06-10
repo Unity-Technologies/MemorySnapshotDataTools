@@ -72,6 +72,8 @@ internal static class SchemaGate
         {
             DatabaseMaintenance.UpgradeInPlace(status.DatabasePath);
             Console.Error.WriteLine($"Upgraded database schema to {current}.");
+            foreach (var change in DatabaseSchemaInfo.ChangesSince(status.Major, status.Minor))
+                Console.Error.WriteLine($"  • {change}");
         }
         else
         {

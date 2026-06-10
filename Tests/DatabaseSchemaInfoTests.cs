@@ -53,4 +53,28 @@ public sealed class DatabaseSchemaInfoTests
     {
         Assert.Equal(expected, DatabaseSchemaInfo.BuildReExportCommand("/snaps/a.snap", "/dbs/a.duckdb", sqlite));
     }
+
+    [Fact]
+    public void Changelog_CoversCurrentVersion()
+    {
+        // Guard: bumping SchemaMajor/SchemaMinor without adding a Changelog row would leave the
+        // upgrade command unable to describe the new version.
+        Assert.Contains(DatabaseSchemaInfo.Changelog,
+            e => e.Major == DatabaseSchemaInfo.SchemaMajor && e.Minor == DatabaseSchemaInfo.SchemaMinor);
+    }
+
+    [Fact]
+    public void ChangesSince_CurrentVersion_IsEmpty()
+    {
+        Assert.Empty(DatabaseSchemaInfo.ChangesSince(DatabaseSchemaInfo.SchemaMajor, DatabaseSchemaInfo.SchemaMinor));
+    }
+
+    [Fact]
+    public void ChangesSince_OneMinorBehind_DescribesCurrentVersion()
+    {
+        // A database one minor behind should be told exactly which (single) version the upgrade applied.
+        var changes = DatabaseSchemaInfo.ChangesSince(DatabaseSchemaInfo.SchemaMajor, DatabaseSchemaInfo.SchemaMinor - 1);
+        var change = Assert.Single(changes);
+        Assert.StartsWith($"v{DatabaseSchemaInfo.SchemaMajor}.{DatabaseSchemaInfo.SchemaMinor}:", change);
+    }
 }

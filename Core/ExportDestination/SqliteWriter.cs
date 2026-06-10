@@ -808,6 +808,7 @@ internal static class SqliteWriter
     #endregion
 
     private const string SchemaTablesScript = """
+DROP VIEW IF EXISTS v_assetbundle_loaded_assets;
 DROP VIEW IF EXISTS v_assetbundle_utilization;
 DROP VIEW IF EXISTS v_connection_edges;
 DROP VIEW IF EXISTS v_region_owner_breakdown;
@@ -936,6 +937,7 @@ CREATE INDEX IF NOT EXISTS idx_system_memory_regions_address ON system_memory_re
     // Drops the analysis views so CreateViewsScript (which uses CREATE VIEW, not CREATE OR REPLACE,
     // for SQLite) is re-runnable by the in-place upgrade path. Order does not matter with IF EXISTS.
     private const string DropViewsScript = """
+DROP VIEW IF EXISTS v_assetbundle_loaded_assets;
 DROP VIEW IF EXISTS v_assetbundle_utilization;
 DROP VIEW IF EXISTS v_connection_edges;
 DROP VIEW IF EXISTS v_region_owner_breakdown;
@@ -1042,6 +1044,34 @@ LEFT JOIN refs r ON r.bundle_index = b.native_object_index
 LEFT JOIN native_objects o ON o.native_object_index = r.ref_index
 WHERE b.native_type_name = 'AssetBundle'
 GROUP BY b.native_object_index, b.name, b.size_bytes, b.resident_size_bytes, b.is_destroyed;
+
+-- One row per (AssetBundle, loaded native object) pair: the exploded, per-asset companion to
+-- v_assetbundle_utilization (which is the per-bundle aggregate). The refs CTE is the SAME filter the
+-- utilization view uses, so the bundle's own native self-reference (to_index = from_index) and its
+-- managed wrapper(s) (excluded by to_kind = 'native_object' + native_connection) are left out — every
+-- row is a genuine OTHER asset the bundle keeps loaded, with no magic numbers.
+CREATE VIEW v_assetbundle_loaded_assets AS
+WITH refs AS (
+    SELECT DISTINCT c.from_index AS bundle_index, c.to_index AS asset_index
+    FROM connections c
+    JOIN native_objects b ON b.native_object_index = c.from_index AND b.native_type_name = 'AssetBundle'
+    WHERE c.from_kind = 'native_object' AND c.to_kind = 'native_object'
+      AND c.connection_type = 'native_connection' AND c.to_index <> c.from_index
+)
+SELECT
+    b.native_object_index AS bundle_index,
+    b.name AS bundle_name,
+    b.size_bytes AS bundle_size_bytes,
+    b.resident_size_bytes AS bundle_resident_bytes,
+    o.native_object_index AS asset_index,
+    o.name AS asset_name,
+    o.native_type_name AS asset_type_name,
+    o.size_bytes AS asset_size_bytes,
+    o.resident_size_bytes AS asset_resident_bytes,
+    o.is_destroyed AS asset_is_destroyed
+FROM refs r
+JOIN native_objects b ON b.native_object_index = r.bundle_index
+JOIN native_objects o ON o.native_object_index = r.asset_index;
 """;
 }
 

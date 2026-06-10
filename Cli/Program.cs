@@ -170,6 +170,13 @@ internal static class Program
                 case SchemaAction.UpgradeInPlace:
                     DatabaseMaintenance.UpgradeInPlace(options.UpgradeDbPath);
                     Console.WriteLine($"Upgraded database schema from v{before.Major}.{before.Minor} to {current}.");
+                    var applied = DatabaseSchemaInfo.ChangesSince(before.Major, before.Minor);
+                    if (applied.Count > 0)
+                    {
+                        Console.WriteLine("Applied (views/indexes re-created):");
+                        foreach (var change in applied)
+                            Console.WriteLine($"  • {change}");
+                    }
                     return 0;
             }
 
