@@ -33,6 +33,8 @@ public sealed class GoldenValidationRunnerTests
         }
         finally
         {
+            // Release pooled SQLite handles so the temp directory can be deleted on Windows.
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(tempDir))
                 Directory.Delete(tempDir, recursive: true);
         }
@@ -61,6 +63,8 @@ public sealed class GoldenValidationRunnerTests
         }
         finally
         {
+            // Release pooled SQLite handles so the temp directory can be deleted on Windows.
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(tempDir))
                 Directory.Delete(tempDir, recursive: true);
         }
@@ -90,6 +94,8 @@ public sealed class GoldenValidationRunnerTests
         }
         finally
         {
+            // Release pooled SQLite handles so the temp directory can be deleted on Windows.
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(tempDir))
                 Directory.Delete(tempDir, recursive: true);
         }

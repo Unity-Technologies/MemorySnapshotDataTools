@@ -214,8 +214,10 @@ The raw offset array encodes element boundaries:
 
 The following table lists all canonical `EntryType` values from the Unity Memory
 Profiler package (`EntryType.cs`). Index values are sequential (no gaps) and must
-match the native C++ capture enum order exactly — the `Count` sentinel (93) is
-the total.
+match the native C++ capture enum order exactly — the package's `Count` sentinel
+(93) is the total of the canonical list. Newer captures may append the optional
+swapped-page entries 93–97 (see below); their presence does not change the format
+version.
 
 Entries marked **†** are present in the canonical format but not decoded by this
 tool. The version column shows the minimum `FormatVersion` at which the entry was
@@ -419,6 +421,25 @@ introduced (`—` = present since the earliest supported version, `8`).
 | 91 | `SystemMemoryResidentPages_PagesState` † | `byte` per range | ConstantSizeElementArray | 17 |
 | 92 | `SystemMemoryResidentPages_PageSize` † | `uint64` per range | ConstantSizeElementArray | 17 |
 
+### System Memory Swapped Pages (optional, appended at v17)
+
+Five **optional** entries appended after the resident-page entries. The format
+version stays **17** — readers must gate on **entry presence**, never on version
+(v18 is `EntityIDAs8ByteStructs`). The encoding mirrors entries 88–92: the same
+range geometry as the resident pages (one range per system region), a single
+global bitset blob where bit *i* (LSB-first) means page *i* is **swapped**
+(written to zRAM / swap, pagemap bit 62), and a page size stored as a raw byte
+count (not an exponent). A page is either resident (pagemap bit 63) or swapped
+(bit 62), never both; swapped bytes are a subset of (committed − resident).
+
+| Index | Name | Element Type | Format | Version |
+|-------|------|--------------|--------|---------|
+| 93 | `SystemMemorySwappedPages_Address` | `uint64` per range | ConstantSizeElementArray | 17 (optional) |
+| 94 | `SystemMemorySwappedPages_FirstPageIndex` | `int32` per range | ConstantSizeElementArray | 17 (optional) |
+| 95 | `SystemMemorySwappedPages_LastPageIndex` | `int32` per range | ConstantSizeElementArray | 17 (optional) |
+| 96 | `SystemMemorySwappedPages_PagesState` | single global bitset blob (bit i = page i swapped, LSB-first) | DynamicSizeElementArray | 17 (optional) |
+| 97 | `SystemMemorySwappedPages_PageSize` | `uint32`/`uint64` byte count (element [0]) | ConstantSizeElementArray | 17 (optional) |
+
 ---
 
 ## 7. Format Version Gates
@@ -438,7 +459,7 @@ how several entries are interpreted during decoding. Version numbers come from
 | 14 | `GfxResourceReferencesAndAllocatorsVersion` | 2022.2+ | Gfx resource references, allocator info, and additional memory label data (entries 69–80) added. |
 | 15 | `NativeObjectMetaDataVersion` | 2022.2+ | `ObjectMetaData_*` entries (81–82) added to allow per-native-object metadata buffers. |
 | 16 | `SystemMemoryRegionsVersion` | 2022.2+ | `SystemMemoryRegions_*` entries (83–87) added. |
-| 17 | `SystemMemoryResidentPagesVersion` | 2023.1+ | `SystemMemoryResidentPages_*` entries (88–92) added. |
+| 17 | `SystemMemoryResidentPagesVersion` | 2023.1+ | `SystemMemoryResidentPages_*` entries (88–92) added. `SystemMemorySwappedPages_*` entries (93–97) may additionally be present in newer captures **without a version bump** — gate on entry presence, not on version. |
 | 18 | `EntityIDAs8ByteStructs` | 2023.1+ | `NativeObjects_InstanceId` and connection instance IDs widen from `int32` to `uint64`. |
 
 ---

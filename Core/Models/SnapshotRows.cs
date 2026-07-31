@@ -30,6 +30,12 @@ public struct NativeObjectRow
     /// </summary>
     public ulong? ResidentSizeBytes;
 
+    /// <summary>
+    /// Swapped size in bytes for the object's native root (same aggregation as <see cref="ResidentSizeBytes"/>);
+    /// null when the snapshot has no swapped-page entries or when <see cref="RootReferenceId"/> is unknown.
+    /// </summary>
+    public ulong? SwappedSizeBytes;
+
     /// <summary>Index into the native type names array.</summary>
     public int TypeIndex;
 
@@ -107,6 +113,9 @@ public struct NativeRootRow
 
     /// <summary>Resident size in bytes aggregated from rooted objects and allocations, or null when not computable.</summary>
     public ulong? ResidentSizeBytes;
+
+    /// <summary>Swapped size in bytes aggregated from rooted objects and allocations, or null when the snapshot has no swapped-page entries.</summary>
+    public ulong? SwappedSizeBytes;
 }
 
 /// <summary>
@@ -179,6 +188,12 @@ public struct SystemMemoryRegionRow
 
     /// <summary>Resident size in bytes for the region.</summary>
     public ulong ResidentBytes;
+
+    /// <summary>
+    /// Swapped size in bytes for the region, derived from the optional swapped-page bitmap
+    /// (entries 93–97); null when the snapshot has no swapped-page entries.
+    /// </summary>
+    public ulong? SwappedBytes;
 
     /// <summary>Region type code from the snapshot.</summary>
     public int Type;

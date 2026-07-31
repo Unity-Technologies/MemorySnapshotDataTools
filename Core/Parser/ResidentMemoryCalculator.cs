@@ -139,20 +139,26 @@ internal static class ResidentMemoryCalculator
         return result;
     }
 
-    private static int FindResidentPageRegionIndex(DecodedSnapshot decoded, ulong address)
+    private static int FindResidentPageRegionIndex(DecodedSnapshot decoded, ulong address) =>
+        FindPageRegionIndex(decoded.SystemMemoryResidentPageAddresses, address);
+
+    /// <summary>
+    /// Finds the page-bitmap range containing <paramref name="address"/> in a sorted range-address
+    /// array (resident or swapped), or -1 when the address precedes every range.
+    /// </summary>
+    internal static int FindPageRegionIndex(ulong[] rangeAddresses, ulong address)
     {
-        var regions = decoded.SystemMemoryResidentPageAddresses;
         var best = -1;
-        for (var i = 0; i < regions.Length; i++)
+        for (var i = 0; i < rangeAddresses.Length; i++)
         {
-            if (address < regions[i])
+            if (address < rangeAddresses[i])
                 break;
 
-            var regionEnd = i + 1 < regions.Length
-                ? regions[i + 1]
+            var regionEnd = i + 1 < rangeAddresses.Length
+                ? rangeAddresses[i + 1]
                 : ulong.MaxValue;
 
-            if (address < regionEnd || i == regions.Length - 1)
+            if (address < regionEnd || i == rangeAddresses.Length - 1)
             {
                 best = i;
                 break;
@@ -171,14 +177,53 @@ internal static class ResidentMemoryCalculator
         int regionIndex,
         ulong address,
         ulong size)
+        => CalculateBytesForRange(
+            decoded.SystemMemoryResidentPageAddresses,
+            decoded.SystemMemoryResidentPageFirstIndices,
+            decoded.SystemMemoryResidentPageLastIndices,
+            pageStates,
+            pageSizeUlong,
+            regionIndex,
+            address,
+            size);
+
+    /// <summary>
+    /// Shared page-bitmap kernel: intersects an address range with a global page bitset (resident or
+    /// swapped) and returns the byte total, trimming the partial head/tail of set boundary pages.
+    /// </summary>
+    /// <param name="rangeAddresses">Per-range base addresses (same geometry for resident and swapped).</param>
+    /// <param name="firstPageIndices">Per-range first page index in the global bitmap.</param>
+    /// <param name="lastPageIndices">Per-range last page index in the global bitmap.</param>
+    /// <param name="pageStates">Global page bitset (bit i = page i set, LSB-first).</param>
+    /// <param name="pageSizeUlong">Page size in bytes.</param>
+    /// <param name="regionIndex">Range index into the geometry arrays.</param>
+    /// <param name="address">Start address of the queried range.</param>
+    /// <param name="size">Size in bytes of the queried range.</param>
+    internal static ulong CalculateBytesForRange(
+        ulong[] rangeAddresses,
+        int[] firstPageIndices,
+        int[] lastPageIndices,
+        BitArray pageStates,
+        ulong pageSizeUlong,
+        int regionIndex,
+        ulong address,
+        ulong size)
     {
         if (size == 0 || pageSizeUlong == 0)
             return 0;
 
+        if (regionIndex < 0 ||
+            regionIndex >= rangeAddresses.Length ||
+            regionIndex >= firstPageIndices.Length ||
+            regionIndex >= lastPageIndices.Length)
+        {
+            return 0;
+        }
+
         var pageSize = pageSizeUlong;
-        var regionAddress = decoded.SystemMemoryResidentPageAddresses[regionIndex];
-        var firstPageIndex = decoded.SystemMemoryResidentPageFirstIndices[regionIndex];
-        var lastPageIndex = decoded.SystemMemoryResidentPageLastIndices[regionIndex];
+        var regionAddress = rangeAddresses[regionIndex];
+        var firstPageIndex = firstPageIndices[regionIndex];
+        var lastPageIndex = lastPageIndices[regionIndex];
 
         var addrDelta = address - regionAddress;
         var begPage = (int)(addrDelta / pageSize) + firstPageIndex;
@@ -187,26 +232,26 @@ internal static class ResidentMemoryCalculator
         if (begPage < firstPageIndex || endPage > lastPageIndex)
             return 0;
 
-        ulong residentSize = 0;
+        ulong totalSize = 0;
         for (var p = begPage; p <= endPage; p++)
         {
             if (p >= 0 && p < pageStates.Length && pageStates[p])
-                residentSize += pageSize;
+                totalSize += pageSize;
         }
 
         if (begPage >= 0 && begPage < pageStates.Length && pageStates[begPage])
         {
             var head = address % pageSize;
-            residentSize -= head;
+            totalSize -= head;
         }
 
         if (endPage >= 0 && endPage < pageStates.Length && pageStates[endPage])
         {
             var tail = (address + size) % pageSize;
             if (tail > 0)
-                residentSize -= pageSize - tail;
+                totalSize -= pageSize - tail;
         }
 
-        return residentSize;
+        return totalSize;
     }
 }

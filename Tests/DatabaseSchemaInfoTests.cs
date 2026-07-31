@@ -38,6 +38,13 @@ public sealed class DatabaseSchemaInfoTests
     }
 
     [Fact]
+    public void Evaluate_PreSwappedSchema_IsReExport()
+    {
+        // v1.x databases predate the v2.0 swapped-page columns and must be re-exported.
+        Assert.Equal(SchemaAction.ReExport, DatabaseSchemaInfo.Evaluate(1, 3));
+    }
+
+    [Fact]
     public void Evaluate_NewerThanTool_IsToolOutdated()
     {
         Assert.Equal(SchemaAction.ToolOutdated,

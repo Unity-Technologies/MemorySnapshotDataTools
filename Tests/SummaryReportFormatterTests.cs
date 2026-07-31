@@ -15,6 +15,8 @@ public sealed class SummaryReportFormatterTests
         {
             TotalAllocatedBytes = 2_909_880_164,
             TotalResidentBytes = 1_333_444_608,
+            TotalSwappedBytes = 104_857_600,
+            SwappedAvailable = true,
         };
         metrics.AllocatedMemoryDistribution.Add(new SummaryCategory
         {
@@ -22,6 +24,8 @@ public sealed class SummaryReportFormatterTests
             CommittedBytes = 393_851_683,
             ResidentBytes = 301_267_487,
             ResidentAvailable = true,
+            SwappedBytes = 52_428_800,
+            SwappedAvailable = true,
         });
         metrics.AllocatedMemoryDistribution.Add(new SummaryCategory
         {
@@ -86,6 +90,32 @@ public sealed class SummaryReportFormatterTests
 
         // Graphics has no resident measurement.
         Assert.Contains("—", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Format_SwappedAvailable_RendersSwappedColumnAndTotal()
+    {
+        var text = SummaryReportFormatter.Format(BuildReport());
+
+        Assert.Contains("Total Swapped", text, StringComparison.Ordinal);
+        Assert.Contains("104,857,600 B", text, StringComparison.Ordinal);
+        Assert.Contains("Swapped", text, StringComparison.Ordinal);
+        // Native has a measured swapped value (50 MB).
+        Assert.Contains("50.00 MB", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Format_SwappedUnavailable_ShowsDashForTotalSwapped()
+    {
+        var report = BuildReport();
+        report.Metrics.SwappedAvailable = false;
+
+        var text = SummaryReportFormatter.Format(report);
+
+        var totalSwappedLine = text
+            .Split('\n')
+            .Single(l => l.Contains("Total Swapped", StringComparison.Ordinal));
+        Assert.Contains("—", totalSwappedLine, StringComparison.Ordinal);
     }
 
     [Fact]

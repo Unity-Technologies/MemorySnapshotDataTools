@@ -41,6 +41,7 @@ Reset minor to 0 whenever you bump major.
 | 1.1 | Added `v_connection_edges` and `v_assetbundle_utilization` views (minor — upgradeable in place). |
 | 1.2 | Reformulated `v_connection_edges` joins (kind check folded into the join key) so DuckDB hash-joins instead of nested-loop — `SELECT … WHERE from_type=…` drops from minutes to sub-second (minor). |
 | 1.3 | Added `v_assetbundle_loaded_assets` view — one row per (AssetBundle, loaded native object) it references (minor — upgradeable in place). |
+| 2.0 | Added swapped-page columns from the optional snapshot entries 93–97: `native_objects.swapped_size_bytes`, `native_roots.swapped_size_bytes`, `system_memory_regions.swapped_bytes`, `summary_metrics.swapped_bytes`/`swapped_available`, plus swapped columns on `v_system_region_summary` and the AssetBundle views (major — re-export required). |
 
 **What the CLI does.** Before a read command (`report`, `summary`, `validate`),
 `DatabaseSchemaInfo.Evaluate(major, minor)` classifies the database and the CLI acts:
@@ -122,6 +123,7 @@ High-level Unity objects (textures, meshes, GameObjects…). One row per native 
 | `native_type_name` | VARCHAR | Resolved type (e.g. `Texture2D`). |
 | `is_destroyed` | BOOLEAN | Marked destroyed but still resident. |
 | `resident_size_bytes` | BIGINT | Resident bytes for the object's root (format ≥ 17), else NULL. |
+| `swapped_size_bytes` | BIGINT | Swapped bytes for the object's root (requires the optional swapped-page entries 93–97), else NULL. |
 
 ### `managed_objects`
 Managed (C#) heap objects. One row per managed object.
@@ -157,6 +159,7 @@ Unity memory areas. Backbone for attribution. One row per root; `root_id` is **u
 | `object_name` | VARCHAR | Root's object name. |
 | `accumulated_size_bytes` | BIGINT | Committed bytes attributed to this root. |
 | `resident_size_bytes` | BIGINT | Resident bytes (format ≥ 17), else NULL. |
+| `swapped_size_bytes` | BIGINT | Swapped bytes (requires the optional swapped-page entries 93–97), else NULL. |
 
 ### `memory_regions`
 Unity's **internal allocator** buckets (`ALLOC_DEFAULT`, `ALLOC_GFX`, TLSF blocks, temp/stack
@@ -196,6 +199,7 @@ keys** — bridge to allocations by address range only.
 | `address` | BIGINT | Region base. |
 | `size_bytes` | BIGINT | Committed / virtual size. |
 | `resident_bytes` | BIGINT | Physical RAM resident. |
+| `swapped_bytes` | BIGINT | Bytes written to swap/zRAM, derived from the optional swapped-page bitmap (entries 93–97); NULL when the snapshot has none. A page is either resident or swapped, never both. |
 | `type` | INTEGER | Region type code (frequently `0` for all rows on iOS — use `name`). |
 | `name` | VARCHAR | Region name. |
 
@@ -209,6 +213,8 @@ MemoryProfiler "Summary" page breakdown (Allocated Memory Distribution + Managed
 | `committed_bytes` | BIGINT | Committed bytes. |
 | `resident_bytes` | BIGINT | Resident bytes. |
 | `resident_available` | INTEGER | 1 if resident data is available, else 0. |
+| `swapped_bytes` | BIGINT | Swapped bytes (0 when unavailable). |
+| `swapped_available` | INTEGER | 1 if swapped data is available (snapshot has the optional swapped-page entries and the category is measurable), else 0. |
 
 ---
 
@@ -236,7 +242,8 @@ One row per OS region: committed vs resident vs Unity-tracked live, plus how muc
 resident RAM Unity explains. The region overview.
 
 Columns: `region_index`, `name`, `addr_hex`, `committed_bytes`, `resident_bytes`, `pct_resident`,
-`unity_alloc_count`, `unity_live_bytes`, `unity_live_pct_of_resident`.
+`swapped_bytes`, `pct_swapped`, `unity_alloc_count`, `unity_live_bytes`, `unity_live_pct_of_resident`.
+(`swapped_bytes`/`pct_swapped` are NULL when the snapshot has no swapped-page data.)
 
 ```sql
 -- Where is resident RAM, and how much does Unity account for?
@@ -275,9 +282,10 @@ One row per `AssetBundle` native object measuring whether it actually keeps load
 bundle's self-reference and its own managed wrappers — no magic numbers). An *empty* bundle
 (`references_loaded_assets = false`) is loaded but holds nothing live — usually reclaimable overhead.
 
-Columns: `native_object_index`, `name`, `bundle_size_bytes`, `bundle_resident_bytes`, `is_destroyed`,
-`referenced_object_count`, `referenced_type_count`, `referenced_size_bytes`,
-`referenced_resident_bytes`, `references_loaded_assets`.
+Columns: `native_object_index`, `name`, `bundle_size_bytes`, `bundle_resident_bytes`,
+`bundle_swapped_bytes`, `is_destroyed`, `referenced_object_count`, `referenced_type_count`,
+`referenced_size_bytes`, `referenced_resident_bytes`, `referenced_swapped_bytes`,
+`references_loaded_assets`.
 
 ```sql
 -- Utilization at a glance: empty vs. asset-holding bundles, and empty-bundle overhead.
@@ -313,11 +321,13 @@ bundle's own native self-reference and its managed wrapper(s) are excluded — e
 | `bundle_name` | VARCHAR | The bundle's object name. |
 | `bundle_size_bytes` | BIGINT | The bundle object's own native size. |
 | `bundle_resident_bytes` | BIGINT | The bundle's resident bytes (format ≥ 17), else NULL. |
+| `bundle_swapped_bytes` | BIGINT | The bundle's swapped bytes (optional entries 93–97), else NULL. |
 | `asset_index` | INTEGER | The loaded object's `native_objects.native_object_index`. |
 | `asset_name` | VARCHAR | The loaded object's name. |
 | `asset_type_name` | VARCHAR | The loaded object's native type (e.g. `Texture2D`, `Mesh`). |
 | `asset_size_bytes` | BIGINT | The loaded object's own native size. |
 | `asset_resident_bytes` | BIGINT | The loaded object's resident bytes (format ≥ 17), else NULL. |
+| `asset_swapped_bytes` | BIGINT | The loaded object's swapped bytes (optional entries 93–97), else NULL. |
 | `asset_is_destroyed` | BOOLEAN | Loaded object marked destroyed but still resident. |
 
 ```sql
@@ -393,7 +403,7 @@ system_memory_regions  — NO foreign key. Bridge by ADDRESS RANGE only
 | Table | What | Size field |
 |-------|------|-----------|
 | `memory_regions` | Unity's **internal allocator** buckets. `native_allocations.memory_region_index` points here. | `address_size` (often 0 — not a bound) |
-| `system_memory_regions` | **OS virtual-memory** regions (vmmap). The RAM ground truth. No FK; bridge by address range. | `size_bytes` (committed), `resident_bytes` |
+| `system_memory_regions` | **OS virtual-memory** regions (vmmap). The RAM ground truth. No FK; bridge by address range. | `size_bytes` (committed), `resident_bytes`, `swapped_bytes` |
 
 These overlap the same address space but are not linked by a key. Joining an allocation to its OS
 region is exactly what `v_allocation_enriched` does for you.
@@ -407,6 +417,10 @@ region is exactly what `v_allocation_enriched` does for you.
   `ALLOC_DEFAULT` report size 0 while holding most allocations. Use the allocation payload sum.
 - **`system_memory_regions.type` is uniformly 0 on iOS.** Group/filter by `name`.
 - **Resident data needs format ≥ 17.** Below that, `resident_size_bytes` and `page_size` are NULL.
+- **Swapped data needs the optional swapped-page entries (93–97).** They can appear on format 17
+  snapshots without a format-version bump; when absent, every `swapped_*` column is NULL
+  (`summary_metrics.swapped_available` = 0) even on format ≥ 17. A page is either resident or
+  swapped, never both — swapped is a subset of (committed − resident).
 - **The four "sizes" don't reconcile.** `system_memory_regions` (whole process VM), `native_roots`
   (Unity subsystem attribution), `native_allocations` (Unity allocator requests), and
   `native_objects` (high-level assets) are overlapping lenses, not a partition — never sum them.

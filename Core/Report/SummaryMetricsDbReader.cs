@@ -1,5 +1,7 @@
 using System.Data.Common;
+using DuckDB.NET.Data;
 using MemorySnapshotDataTools.Validation;
+using Microsoft.Data.Sqlite;
 
 namespace MemorySnapshotDataTools.Report;
 
@@ -21,8 +23,14 @@ internal static class SummaryMetricsDbReader
         var metrics = new SummaryMetrics();
         try
         {
+            // Swapped columns exist from schema v2.0; older databases degrade to resident-only
+            // (SwappedAvailable stays false). The presence check is a parameterized catalog query.
+            var hasSwapped = HasSummarySwappedColumns(connection);
+
             using var cmd = connection.CreateCommand();
-            cmd.CommandText = GoldenValidationQueries.SummaryMetricsSql;
+            cmd.CommandText = hasSwapped
+                ? GoldenValidationQueries.SummaryMetricsWithSwappedSql
+                : GoldenValidationQueries.SummaryMetricsSql;
             using var reader = cmd.ExecuteReader();
 
             var any = false;
@@ -34,19 +42,23 @@ internal static class SummaryMetricsDbReader
                 var committed = ToULong(DbScalarReader.GetInt64(reader, 2));
                 var resident = ToULong(DbScalarReader.GetInt64(reader, 3));
                 var residentAvailable = DbScalarReader.GetInt64(reader, 4) != 0;
+                var swapped = hasSwapped ? ToULong(DbScalarReader.GetInt64(reader, 5)) : 0UL;
+                var swappedAvailable = hasSwapped && DbScalarReader.GetInt64(reader, 6) != 0;
 
                 if (group == SummaryMetricsTable.GroupTotals && category == SummaryMetricsTable.CategoryTotal)
                 {
                     metrics.TotalAllocatedBytes = committed;
                     metrics.TotalResidentBytes = resident;
+                    metrics.TotalSwappedBytes = swapped;
+                    metrics.SwappedAvailable = swappedAvailable;
                 }
                 else if (group == SummaryMetricsTable.GroupAllocatedMemoryDistribution)
                 {
-                    metrics.AllocatedMemoryDistribution.Add(MakeCategory(category, committed, resident, residentAvailable));
+                    metrics.AllocatedMemoryDistribution.Add(MakeCategory(category, committed, resident, residentAvailable, swapped, swappedAvailable));
                 }
                 else if (group == SummaryMetricsTable.GroupManagedHeapUtilization)
                 {
-                    metrics.ManagedHeapUtilization.Add(MakeCategory(category, committed, resident, residentAvailable));
+                    metrics.ManagedHeapUtilization.Add(MakeCategory(category, committed, resident, residentAvailable, swapped, swappedAvailable));
                 }
             }
 
@@ -59,13 +71,43 @@ internal static class SummaryMetricsDbReader
         }
     }
 
-    private static SummaryCategory MakeCategory(string name, ulong committed, ulong resident, bool residentAvailable) =>
+    /// <summary>
+    /// Whether <c>summary_metrics</c> has the schema v2.0 swapped columns. Identifier checks go through
+    /// the catalog tables with bound parameters (never spliced into SQL) — see docs/sql-safety.md.
+    /// </summary>
+    private static bool HasSummarySwappedColumns(DbConnection connection)
+    {
+        if (connection is DuckDBConnection duckDb)
+        {
+            using var cmd = duckDb.CreateCommand();
+            cmd.CommandText =
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ? AND column_name = ? LIMIT 1";
+            cmd.Parameters.Add(new DuckDBParameter { Value = "summary_metrics" });
+            cmd.Parameters.Add(new DuckDBParameter { Value = "swapped_bytes" });
+            return cmd.ExecuteScalar() != null;
+        }
+
+        if (connection is SqliteConnection sqlite)
+        {
+            using var cmd = sqlite.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM pragma_table_info($t) WHERE name = $c LIMIT 1";
+            cmd.Parameters.AddWithValue("$t", "summary_metrics");
+            cmd.Parameters.AddWithValue("$c", "swapped_bytes");
+            return cmd.ExecuteScalar() != null;
+        }
+
+        return false;
+    }
+
+    private static SummaryCategory MakeCategory(string name, ulong committed, ulong resident, bool residentAvailable, ulong swapped, bool swappedAvailable) =>
         new()
         {
             Name = name,
             CommittedBytes = committed,
             ResidentBytes = resident,
             ResidentAvailable = residentAvailable,
+            SwappedBytes = swapped,
+            SwappedAvailable = swappedAvailable,
         };
 
     private static ulong ToULong(long value) => value < 0 ? 0UL : (ulong)value;

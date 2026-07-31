@@ -184,6 +184,37 @@ internal static class ReportSql
         LIMIT 40;
         """;
 
+    /// <summary>
+    /// OS system memory regions with committed/resident totals. Use only after HasColumn confirms the
+    /// system_memory_regions table exists (pre-versioning databases may lack it).
+    /// </summary>
+    public const string SystemMemoryRegions = """
+        SELECT
+            region_index,
+            COALESCE(name, '(unnamed)') AS region_name,
+            ROUND(size_bytes / 1024.0 / 1024, 2) AS committed_mb,
+            ROUND(resident_bytes / 1024.0 / 1024, 2) AS resident_mb
+        FROM system_memory_regions
+        ORDER BY resident_bytes DESC
+        LIMIT 40;
+        """;
+
+    /// <summary>
+    /// <see cref="SystemMemoryRegions"/> plus the schema v2.0 swapped_mb column. Use only after
+    /// HasColumn confirms system_memory_regions.swapped_bytes exists.
+    /// </summary>
+    public const string SystemMemoryRegionsWithSwapped = """
+        SELECT
+            region_index,
+            COALESCE(name, '(unnamed)') AS region_name,
+            ROUND(size_bytes / 1024.0 / 1024, 2) AS committed_mb,
+            ROUND(resident_bytes / 1024.0 / 1024, 2) AS resident_mb,
+            ROUND(swapped_bytes / 1024.0 / 1024, 2) AS swapped_mb
+        FROM system_memory_regions
+        ORDER BY resident_bytes DESC
+        LIMIT 40;
+        """;
+
     public const string AllocationEfficiency = """
         SELECT
             COALESCE(r.name, '(unnamed)') AS region_name,

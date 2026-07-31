@@ -116,6 +116,10 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                                 nativeRow.AppendValue(unchecked((long)row.ResidentSizeBytes.Value));
                             else
                                 nativeRow.AppendNullValue();
+                            if (row.SwappedSizeBytes.HasValue)
+                                nativeRow.AppendValue(unchecked((long)row.SwappedSizeBytes.Value));
+                            else
+                                nativeRow.AppendNullValue();
                             nativeRow.EndRow();
                         }
                         nativeSw.Stop();
@@ -176,6 +180,10 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                                 .AppendValue(unchecked((long)row.AccumulatedSizeBytes));
                             if (row.ResidentSizeBytes.HasValue)
                                 rootRow.AppendValue(unchecked((long)row.ResidentSizeBytes.Value));
+                            else
+                                rootRow.AppendNullValue();
+                            if (row.SwappedSizeBytes.HasValue)
+                                rootRow.AppendValue(unchecked((long)row.SwappedSizeBytes.Value));
                             else
                                 rootRow.AppendNullValue();
                             rootRow.EndRow();
@@ -241,11 +249,16 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                         var sysSw = Stopwatch.StartNew();
                         foreach (var row in batch.SystemMemoryRegions)
                         {
-                            systemRegionAppender.CreateRow()
+                            var systemRow = systemRegionAppender.CreateRow()
                                 .AppendValue(row.RegionIndex)
                                 .AppendValue(unchecked((long)row.Address))
                                 .AppendValue(unchecked((long)row.SizeBytes))
-                                .AppendValue(unchecked((long)row.ResidentBytes))
+                                .AppendValue(unchecked((long)row.ResidentBytes));
+                            if (row.SwappedBytes.HasValue)
+                                systemRow.AppendValue(unchecked((long)row.SwappedBytes.Value));
+                            else
+                                systemRow.AppendNullValue();
+                            systemRow
                                 .AppendValue(row.Type)
                                 .AppendValue(row.Name ?? string.Empty)
                                 .EndRow();
@@ -284,7 +297,7 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
         connection.Open();
 
         using var appender = connection.CreateAppender("summary_metrics");
-        foreach (var (group, category, committed, resident, residentAvailable) in SummaryMetricsTable.Enumerate(metrics))
+        foreach (var (group, category, committed, resident, residentAvailable, swapped, swappedAvailable) in SummaryMetricsTable.Enumerate(metrics))
         {
             appender.CreateRow()
                 .AppendValue(group)
@@ -292,6 +305,8 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                 .AppendValue(unchecked((long)committed))
                 .AppendValue(unchecked((long)resident))
                 .AppendValue(residentAvailable ? 1 : 0)
+                .AppendValue(unchecked((long)swapped))
+                .AppendValue(swappedAvailable ? 1 : 0)
                 .EndRow();
         }
     }
@@ -487,7 +502,8 @@ CREATE OR REPLACE TABLE native_objects (
     type_index INTEGER,
     native_type_name VARCHAR,
     is_destroyed BOOLEAN NOT NULL,
-    resident_size_bytes BIGINT
+    resident_size_bytes BIGINT,
+    swapped_size_bytes BIGINT
 );
 
 CREATE OR REPLACE TABLE managed_objects (
@@ -513,7 +529,8 @@ CREATE OR REPLACE TABLE native_roots (
     area_name VARCHAR,
     object_name VARCHAR,
     accumulated_size_bytes BIGINT NOT NULL,
-    resident_size_bytes BIGINT
+    resident_size_bytes BIGINT,
+    swapped_size_bytes BIGINT
 );
 
 CREATE OR REPLACE TABLE memory_regions (
@@ -541,6 +558,7 @@ CREATE OR REPLACE TABLE system_memory_regions (
     address BIGINT NOT NULL,
     size_bytes BIGINT NOT NULL,
     resident_bytes BIGINT NOT NULL,
+    swapped_bytes BIGINT,
     type INTEGER NOT NULL,
     name VARCHAR
 );
@@ -550,7 +568,9 @@ CREATE OR REPLACE TABLE summary_metrics (
     category VARCHAR NOT NULL,
     committed_bytes BIGINT NOT NULL,
     resident_bytes BIGINT NOT NULL,
-    resident_available INTEGER NOT NULL
+    resident_available INTEGER NOT NULL,
+    swapped_bytes BIGINT NOT NULL,
+    swapped_available INTEGER NOT NULL
 );
 """;
 
@@ -604,13 +624,15 @@ SELECT
     s.size_bytes AS committed_bytes,
     s.resident_bytes,
     ROUND(100.0 * s.resident_bytes / NULLIF(s.size_bytes, 0), 1) AS pct_resident,
+    s.swapped_bytes,
+    ROUND(100.0 * s.swapped_bytes / NULLIF(s.size_bytes, 0), 1) AS pct_swapped,
     COUNT(a.allocation_index) AS unity_alloc_count,
     COALESCE(SUM(a.size_bytes), 0) AS unity_live_bytes,
     ROUND(100.0 * COALESCE(SUM(a.size_bytes), 0) / NULLIF(s.resident_bytes, 0), 1) AS unity_live_pct_of_resident
 FROM system_memory_regions s
 LEFT JOIN native_allocations a
        ON a.address >= s.address AND a.address < s.address + s.size_bytes
-GROUP BY s.region_index, s.name, s.address, s.size_bytes, s.resident_bytes;
+GROUP BY s.region_index, s.name, s.address, s.size_bytes, s.resident_bytes, s.swapped_bytes;
 
 CREATE OR REPLACE VIEW v_region_owner_breakdown AS
 SELECT
@@ -655,17 +677,19 @@ SELECT
     b.name,
     b.size_bytes AS bundle_size_bytes,
     b.resident_size_bytes AS bundle_resident_bytes,
+    b.swapped_size_bytes AS bundle_swapped_bytes,
     b.is_destroyed,
     COUNT(DISTINCT r.ref_index) AS referenced_object_count,
     COUNT(DISTINCT o.native_type_name) AS referenced_type_count,
     COALESCE(SUM(o.size_bytes), 0) AS referenced_size_bytes,
     COALESCE(SUM(o.resident_size_bytes), 0) AS referenced_resident_bytes,
+    COALESCE(SUM(o.swapped_size_bytes), 0) AS referenced_swapped_bytes,
     (COUNT(DISTINCT r.ref_index) > 0) AS references_loaded_assets
 FROM native_objects b
 LEFT JOIN refs r ON r.bundle_index = b.native_object_index
 LEFT JOIN native_objects o ON o.native_object_index = r.ref_index
 WHERE b.native_type_name = 'AssetBundle'
-GROUP BY b.native_object_index, b.name, b.size_bytes, b.resident_size_bytes, b.is_destroyed;
+GROUP BY b.native_object_index, b.name, b.size_bytes, b.resident_size_bytes, b.swapped_size_bytes, b.is_destroyed;
 
 -- One row per (AssetBundle, loaded native object) pair: the exploded, per-asset companion to
 -- v_assetbundle_utilization (which is the per-bundle aggregate). The refs CTE is the SAME filter the
@@ -685,11 +709,13 @@ SELECT
     b.name AS bundle_name,
     b.size_bytes AS bundle_size_bytes,
     b.resident_size_bytes AS bundle_resident_bytes,
+    b.swapped_size_bytes AS bundle_swapped_bytes,
     o.native_object_index AS asset_index,
     o.name AS asset_name,
     o.native_type_name AS asset_type_name,
     o.size_bytes AS asset_size_bytes,
     o.resident_size_bytes AS asset_resident_bytes,
+    o.swapped_size_bytes AS asset_swapped_bytes,
     o.is_destroyed AS asset_is_destroyed
 FROM refs r
 JOIN native_objects b ON b.native_object_index = r.bundle_index

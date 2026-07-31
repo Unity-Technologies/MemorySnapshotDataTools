@@ -9,7 +9,7 @@ namespace MemorySnapshotDataTools.Report;
 /// </summary>
 public static class SummaryReportFormatter
 {
-    private const string ResidentUnavailable = "—";
+    private const string ValueUnavailable = "—";
 
     /// <summary>Formats <paramref name="report"/> into a printable summary (ends with a newline).</summary>
     public static string Format(SummaryReport report)
@@ -91,6 +91,10 @@ public static class SummaryReportFormatter
         sb.AppendLine("Totals");
         sb.AppendLine($"  Total Allocated   {FormatBytes(metrics.TotalAllocatedBytes),12}   ({ExactBytes(metrics.TotalAllocatedBytes)})");
         sb.AppendLine($"  Total Resident    {FormatBytes(metrics.TotalResidentBytes),12}   ({ExactBytes(metrics.TotalResidentBytes)})");
+        if (metrics.SwappedAvailable)
+            sb.AppendLine($"  Total Swapped     {FormatBytes(metrics.TotalSwappedBytes),12}   ({ExactBytes(metrics.TotalSwappedBytes)})");
+        else
+            sb.AppendLine($"  Total Swapped     {ValueUnavailable,12}");
     }
 
     private static void AppendBreakdown(StringBuilder sb, string title, IReadOnlyList<SummaryCategory> rows)
@@ -105,14 +109,15 @@ public static class SummaryReportFormatter
         var nameWidth = Math.Max("Category".Length, rows.Max(r => r.Name.Length));
         const int valueWidth = 12;
 
-        sb.AppendLine($"  {"Category".PadRight(nameWidth)}   {"Allocated".PadLeft(valueWidth)}   {"Resident".PadLeft(valueWidth)}");
-        sb.AppendLine($"  {new string('─', nameWidth + 3 + valueWidth + 3 + valueWidth)}");
+        sb.AppendLine($"  {"Category".PadRight(nameWidth)}   {"Allocated".PadLeft(valueWidth)}   {"Resident".PadLeft(valueWidth)}   {"Swapped".PadLeft(valueWidth)}");
+        sb.AppendLine($"  {new string('─', nameWidth + 3 + valueWidth + 3 + valueWidth + 3 + valueWidth)}");
 
         foreach (var row in rows)
         {
             var allocated = FormatBytes(row.CommittedBytes).PadLeft(valueWidth);
-            var resident = (row.ResidentAvailable ? FormatBytes(row.ResidentBytes) : ResidentUnavailable).PadLeft(valueWidth);
-            sb.AppendLine($"  {row.Name.PadRight(nameWidth)}   {allocated}   {resident}");
+            var resident = (row.ResidentAvailable ? FormatBytes(row.ResidentBytes) : ValueUnavailable).PadLeft(valueWidth);
+            var swapped = (row.SwappedAvailable ? FormatBytes(row.SwappedBytes) : ValueUnavailable).PadLeft(valueWidth);
+            sb.AppendLine($"  {row.Name.PadRight(nameWidth)}   {allocated}   {resident}   {swapped}");
         }
     }
 

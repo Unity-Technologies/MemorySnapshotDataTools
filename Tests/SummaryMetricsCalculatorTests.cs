@@ -50,6 +50,57 @@ public sealed class SummaryMetricsCalculatorTests
         // Graphics and Untracked report resident as unavailable.
         Assert.False(Row(result.AllocatedMemoryDistribution, "Graphics (Estimated)").ResidentAvailable);
         Assert.False(Row(result.AllocatedMemoryDistribution, "Untracked").ResidentAvailable);
+
+        // No swapped-page entries → swapped is unavailable everywhere.
+        Assert.False(result.SwappedAvailable);
+        Assert.All(result.AllocatedMemoryDistribution, r => Assert.False(r.SwappedAvailable));
+    }
+
+    /// <summary>
+    /// With resident and swapped page bitmaps present (resident page 0, swapped page 1), a native
+    /// allocation spanning both pages splits into one resident and one swapped page, and swapped
+    /// becomes available for the measurable categories only.
+    /// </summary>
+    [Fact]
+    public void Compute_SwappedPages_ReportsSwappedBytesPerCategory()
+    {
+        const ulong pageSize = 4096;
+        var decoded = new DecodedSnapshot
+        {
+            FormatVersion = 17,
+            SystemMemoryRegionAddresses = [0x1000],
+            SystemMemoryRegionSizes = [2 * pageSize],
+            SystemMemoryRegionResidentSizes = [pageSize],
+            SystemMemoryRegionTypes = [0],
+            SystemMemoryRegionNames = ["region"],
+            SystemMemoryResidentPageAddresses = [0x1000],
+            SystemMemoryResidentPageFirstIndices = [0],
+            SystemMemoryResidentPageLastIndices = [1],
+            SystemMemoryResidentPageSize = pageSize,
+            SystemMemoryResidentPageStates = [new byte[] { 0b0000_0001 }],
+            SystemMemorySwappedPageAddresses = [0x1000],
+            SystemMemorySwappedPageFirstIndices = [0],
+            SystemMemorySwappedPageLastIndices = [1],
+            SystemMemorySwappedPageSize = pageSize,
+            SystemMemorySwappedPageStates = [new byte[] { 0b0000_0010 }],
+            NativeAllocationAddresses = [0x1000],
+            NativeAllocationSizes = [2 * pageSize],
+        };
+
+        var result = SummaryMetricsCalculator.Compute(decoded, []);
+
+        Assert.True(result.SwappedAvailable);
+        Assert.Equal(pageSize, result.TotalSwappedBytes);
+
+        var native = Row(result.AllocatedMemoryDistribution, "Native");
+        Assert.Equal(2 * pageSize, native.CommittedBytes);
+        Assert.Equal(pageSize, native.ResidentBytes);
+        Assert.True(native.SwappedAvailable);
+        Assert.Equal(pageSize, native.SwappedBytes);
+
+        // Graphics and Untracked stay unavailable for swapped, mirroring resident.
+        Assert.False(Row(result.AllocatedMemoryDistribution, "Graphics (Estimated)").SwappedAvailable);
+        Assert.False(Row(result.AllocatedMemoryDistribution, "Untracked").SwappedAvailable);
     }
 
     /// <summary>

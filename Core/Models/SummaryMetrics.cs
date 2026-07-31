@@ -13,6 +13,15 @@ public sealed class SummaryMetrics
     /// <summary>Total resident bytes across all categories.</summary>
     public ulong TotalResidentBytes { get; set; }
 
+    /// <summary>Total swapped bytes across all categories (meaningful only when <see cref="SwappedAvailable"/> is true).</summary>
+    public ulong TotalSwappedBytes { get; set; }
+
+    /// <summary>
+    /// False when the snapshot has no swapped-page data (optional v17 entries 93–97 absent);
+    /// swapped totals compare as unavailable in that case.
+    /// </summary>
+    public bool SwappedAvailable { get; set; }
+
     /// <summary>Allocated Memory Distribution rows (Native, Managed, Executables &amp; Mapped, Graphics, Untracked).</summary>
     public List<SummaryCategory> AllocatedMemoryDistribution { get; } = [];
 
@@ -38,15 +47,15 @@ public static class SummaryMetricsTable
     public const string CategoryTotal = "Total";
 
     /// <summary>Flattens summary metrics into one row per category for storage in <c>summary_metrics</c>.</summary>
-    public static IEnumerable<(string Group, string Category, ulong Committed, ulong Resident, bool ResidentAvailable)> Enumerate(SummaryMetrics metrics)
+    public static IEnumerable<(string Group, string Category, ulong Committed, ulong Resident, bool ResidentAvailable, ulong Swapped, bool SwappedAvailable)> Enumerate(SummaryMetrics metrics)
     {
-        yield return (GroupTotals, CategoryTotal, metrics.TotalAllocatedBytes, metrics.TotalResidentBytes, true);
+        yield return (GroupTotals, CategoryTotal, metrics.TotalAllocatedBytes, metrics.TotalResidentBytes, true, metrics.TotalSwappedBytes, metrics.SwappedAvailable);
 
         foreach (var row in metrics.AllocatedMemoryDistribution)
-            yield return (GroupAllocatedMemoryDistribution, row.Name, row.CommittedBytes, row.ResidentBytes, row.ResidentAvailable);
+            yield return (GroupAllocatedMemoryDistribution, row.Name, row.CommittedBytes, row.ResidentBytes, row.ResidentAvailable, row.SwappedBytes, row.SwappedAvailable);
 
         foreach (var row in metrics.ManagedHeapUtilization)
-            yield return (GroupManagedHeapUtilization, row.Name, row.CommittedBytes, row.ResidentBytes, row.ResidentAvailable);
+            yield return (GroupManagedHeapUtilization, row.Name, row.CommittedBytes, row.ResidentBytes, row.ResidentAvailable, row.SwappedBytes, row.SwappedAvailable);
     }
 }
 
@@ -68,4 +77,13 @@ public sealed class SummaryCategory
     /// False for categories where resident size cannot be measured (Graphics, Untracked); those compare committed only.
     /// </summary>
     public bool ResidentAvailable { get; set; } = true;
+
+    /// <summary>Swapped bytes for this category (meaningful only when <see cref="SwappedAvailable"/> is true).</summary>
+    public ulong SwappedBytes { get; set; }
+
+    /// <summary>
+    /// False when swapped size is not measurable: the snapshot has no swapped-page data, or the category
+    /// cannot be measured per page (Graphics, Untracked — same categories as <see cref="ResidentAvailable"/>).
+    /// </summary>
+    public bool SwappedAvailable { get; set; }
 }

@@ -82,6 +82,14 @@ internal enum SnapEntryType : ushort
     SystemMemoryResidentPages_LastPageIndex = 90,
     SystemMemoryResidentPages_PagesState = 91,
     SystemMemoryResidentPages_PageSize = 92,
+
+    // Optional swapped-page entries appended at format v17 (the version stays 17; gate on entry
+    // presence, never on version — v18 is EntityIDAs8ByteStructs). Same encoding as entries 88–92.
+    SystemMemorySwappedPages_Address = 93,
+    SystemMemorySwappedPages_FirstPageIndex = 94,
+    SystemMemorySwappedPages_LastPageIndex = 95,
+    SystemMemorySwappedPages_PagesState = 96,
+    SystemMemorySwappedPages_PageSize = 97,
 }
 
 /// <summary>Format version constants used when decoding snapshot entries (e.g. instance IDs, heap sections).</summary>
@@ -285,6 +293,21 @@ public sealed class DecodedSnapshot
 
     /// <summary>Page size in bytes for resident page calculations (format v17+).</summary>
     public ulong SystemMemoryResidentPageSize { get; set; }
+
+    /// <summary>Swapped-page range base addresses, one per system region (optional v17+ entries 93–97; empty when absent).</summary>
+    public ulong[] SystemMemorySwappedPageAddresses { get; set; } = [];
+
+    /// <summary>First page index in the global swapped-page bitmap per system region (optional v17+).</summary>
+    public int[] SystemMemorySwappedPageFirstIndices { get; set; } = [];
+
+    /// <summary>Last page index in the global swapped-page bitmap per system region (optional v17+).</summary>
+    public int[] SystemMemorySwappedPageLastIndices { get; set; } = [];
+
+    /// <summary>Global page swapped bitmap bytes (optional v17+); one element holds the full bitset (bit i = page i swapped, LSB-first).</summary>
+    public byte[][] SystemMemorySwappedPageStates { get; set; } = [];
+
+    /// <summary>Page size in bytes for swapped page calculations (optional v17+); raw byte count, not an exponent.</summary>
+    public ulong SystemMemorySwappedPageSize { get; set; }
 
     /// <summary>VM layout (pointer size, header offsets).</summary>
     public DecodedVirtualMachineInfo VirtualMachineInformation { get; set; } = new();

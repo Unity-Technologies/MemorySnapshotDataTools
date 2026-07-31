@@ -18,25 +18,60 @@ internal static class MemoryMapResidentAggregator
     private readonly record struct MemoryPoint(ulong Address, PointKind Kind, int Index, bool IsAllocation);
 
     /// <summary>
-    /// Computes per-root and per-object resident sizes from page bitmap data and address layout.
+    /// Per-root and per-object resident and swapped sizes computed by <see cref="Compute"/>.
+    /// The swapped arrays are null when the optional swapped-page entries are absent.
     /// </summary>
-    public static (ulong[] RootResidentSizes, ulong[] ObjectResidentSizes) Compute(DecodedSnapshot decoded)
+    internal sealed class MemoryMapSizes
+    {
+        /// <summary>Resident bytes per native root.</summary>
+        public required ulong[] RootResidentSizes { get; init; }
+
+        /// <summary>Resident bytes per native object.</summary>
+        public required ulong[] ObjectResidentSizes { get; init; }
+
+        /// <summary>Swapped bytes per native root, or null when swapped-page entries are absent.</summary>
+        public required ulong[]? RootSwappedSizes { get; init; }
+
+        /// <summary>Swapped bytes per native object, or null when swapped-page entries are absent.</summary>
+        public required ulong[]? ObjectSwappedSizes { get; init; }
+    }
+
+    /// <summary>
+    /// Computes per-root and per-object resident (and, when the optional swapped-page entries are
+    /// present, swapped) sizes from page bitmap data and address layout in a single walk.
+    /// </summary>
+    public static MemoryMapSizes Compute(DecodedSnapshot decoded)
     {
         var rootCount = decoded.NativeRootIds.Length;
         var objectCount = decoded.NativeObjectNames.Length;
         var rootResident = new ulong[rootCount];
         var objectResident = new ulong[objectCount];
 
-        if (!ResidentMemoryCalculator.HasPerObjectResident(decoded))
-            return (rootResident, objectResident);
+        var hasResident = ResidentMemoryCalculator.HasPerObjectResident(decoded);
+        var hasSwapped = SwappedMemoryCalculator.HasPerObjectSwapped(decoded);
+        var rootSwapped = hasSwapped ? new ulong[rootCount] : null;
+        var objectSwapped = hasSwapped ? new ulong[objectCount] : null;
+
+        var result = new MemoryMapSizes
+        {
+            RootResidentSizes = rootResident,
+            ObjectResidentSizes = objectResident,
+            RootSwappedSizes = rootSwapped,
+            ObjectSwappedSizes = objectSwapped,
+        };
+
+        if (!hasResident && !hasSwapped)
+            return result;
 
         var rootIdToIndex = BuildRootIdToIndex(decoded);
         var points = BuildSortedPoints(decoded);
         if (points.Count < 2)
-            return (rootResident, objectResident);
+            return result;
 
-        var pageStates = new BitArray(decoded.SystemMemoryResidentPageStates[0]);
-        var pageSize = decoded.SystemMemoryResidentPageSize;
+        var residentStates = hasResident ? new BitArray(decoded.SystemMemoryResidentPageStates[0]) : null;
+        var residentPageSize = decoded.SystemMemoryResidentPageSize;
+        var swappedStates = hasSwapped ? new BitArray(decoded.SystemMemorySwappedPageStates[0]) : null;
+        var swappedPageSize = decoded.SystemMemorySwappedPageSize;
         var currentRegionIndex = -1;
 
         for (var i = 0; i < points.Count - 1; i++)
@@ -54,13 +89,25 @@ internal static class MemoryMapResidentAggregator
             if (size == 0)
                 continue;
 
-            var resident = ResidentMemoryCalculator.CalculateResidentForRange(
-                decoded,
-                pageStates,
-                pageSize,
-                currentRegionIndex,
-                cur.Address,
-                size);
+            var resident = residentStates != null
+                ? ResidentMemoryCalculator.CalculateResidentForRange(
+                    decoded,
+                    residentStates,
+                    residentPageSize,
+                    currentRegionIndex,
+                    cur.Address,
+                    size)
+                : 0;
+
+            var swapped = swappedStates != null
+                ? SwappedMemoryCalculator.CalculateSwappedForRange(
+                    decoded,
+                    swappedStates,
+                    swappedPageSize,
+                    currentRegionIndex,
+                    cur.Address,
+                    size)
+                : 0;
 
             if (cur.IsAllocation)
             {
@@ -72,11 +119,17 @@ internal static class MemoryMapResidentAggregator
                     continue;
 
                 if (rootIdToIndex.TryGetValue(rootReferenceId, out var allocationRootIndex))
+                {
                     rootResident[allocationRootIndex] += resident;
+                    if (rootSwapped != null)
+                        rootSwapped[allocationRootIndex] += swapped;
+                }
             }
             else if (cur.Kind == PointKind.Start)
             {
                 objectResident[cur.Index] += resident;
+                if (objectSwapped != null)
+                    objectSwapped[cur.Index] += swapped;
                 if (cur.Index < decoded.NativeObjectRootReferenceIds.Length)
                 {
                     var rootReferenceId = decoded.NativeObjectRootReferenceIds[cur.Index];
@@ -84,12 +137,14 @@ internal static class MemoryMapResidentAggregator
                         rootIdToIndex.TryGetValue(rootReferenceId, out var objectRootIndex))
                     {
                         rootResident[objectRootIndex] += resident;
+                        if (rootSwapped != null)
+                            rootSwapped[objectRootIndex] += swapped;
                     }
                 }
             }
         }
 
-        return (rootResident, objectResident);
+        return result;
     }
 
     private static Dictionary<long, int> BuildRootIdToIndex(DecodedSnapshot decoded)

@@ -66,11 +66,13 @@ public static class SnapshotBridge
         ExtractSystemMemoryRegions(decoded, data.SystemMemoryRegions);
 
         var hasResident = ResidentMemoryCalculator.HasPerObjectResident(decoded);
-        var (rootResidentSizes, _) = MemoryMapResidentAggregator.Compute(decoded);
+        var hasSwapped = SwappedMemoryCalculator.HasPerObjectSwapped(decoded);
+        var mapSizes = MemoryMapResidentAggregator.Compute(decoded);
         var rootIdToIndex = BuildRootIdToIndex(decoded);
 
-        ExtractNativeObjects(decoded, data.NativeObjects, rootResidentSizes, rootIdToIndex, hasResident);
-        ApplyRootResidentSizes(data.NativeRoots, rootResidentSizes, hasResident);
+        ExtractNativeObjects(decoded, data.NativeObjects, mapSizes, rootIdToIndex, hasResident);
+        ApplyRootSizes(data.NativeRoots, mapSizes, hasResident);
+        ApplySystemRegionSwappedSizes(decoded, data.SystemMemoryRegions, hasSwapped);
         var managedCrawl = ManagedSnapshotCrawler.Crawl(decoded);
         data.ManagedObjects.AddRange(managedCrawl.ManagedObjects);
         ExtractConnections(decoded, managedCrawl.ManagedConnections, data.Connections);
@@ -106,10 +108,12 @@ public static class SnapshotBridge
     private static void ExtractNativeObjects(
         DecodedSnapshot decoded,
         List<NativeObjectRow> output,
-        ulong[] rootResidentSizes,
+        MemoryMapResidentAggregator.MemoryMapSizes mapSizes,
         Dictionary<long, int> rootIdToIndex,
         bool hasResident)
     {
+        var rootResidentSizes = mapSizes.RootResidentSizes;
+        var rootSwappedSizes = mapSizes.RootSwappedSizes;
         output.Capacity = decoded.NativeObjectNames.Length;
         for (var i = 0; i < decoded.NativeObjectNames.Length; i++)
         {
@@ -119,12 +123,13 @@ public static class SnapshotBridge
                 ? decoded.NativeObjectRootReferenceIds[i]
                 : -1L;
             ulong? residentSizeBytes = null;
-            if (hasResident &&
-                rootReferenceId >= 1 &&
-                rootIdToIndex.TryGetValue(rootReferenceId, out var rootIndex) &&
-                rootIndex < rootResidentSizes.Length)
+            ulong? swappedSizeBytes = null;
+            if (rootReferenceId >= 1 && rootIdToIndex.TryGetValue(rootReferenceId, out var rootIndex))
             {
-                residentSizeBytes = rootResidentSizes[rootIndex];
+                if (hasResident && rootIndex < rootResidentSizes.Length)
+                    residentSizeBytes = rootResidentSizes[rootIndex];
+                if (rootSwappedSizes != null && rootIndex < rootSwappedSizes.Length)
+                    swappedSizeBytes = rootSwappedSizes[rootIndex];
             }
 
             output.Add(new NativeObjectRow
@@ -136,6 +141,7 @@ public static class SnapshotBridge
                 NativeObjectAddress = address,
                 RootReferenceId = rootReferenceId,
                 ResidentSizeBytes = residentSizeBytes,
+                SwappedSizeBytes = swappedSizeBytes,
                 TypeIndex = typeIndex,
                 NativeTypeName = typeIndex >= 0 && typeIndex < decoded.NativeTypeNames.Length
                     ? decoded.NativeTypeNames[typeIndex] ?? string.Empty
@@ -145,16 +151,38 @@ public static class SnapshotBridge
         }
     }
 
-    private static void ApplyRootResidentSizes(List<NativeRootRow> roots, ulong[] rootResidentSizes, bool hasResident)
+    private static void ApplyRootSizes(List<NativeRootRow> roots, MemoryMapResidentAggregator.MemoryMapSizes mapSizes, bool hasResident)
     {
-        if (!hasResident)
+        var rootResidentSizes = mapSizes.RootResidentSizes;
+        var rootSwappedSizes = mapSizes.RootSwappedSizes;
+        if (!hasResident && rootSwappedSizes == null)
             return;
 
         for (var i = 0; i < roots.Count; i++)
         {
             var row = roots[i];
-            row.ResidentSizeBytes = i < rootResidentSizes.Length ? rootResidentSizes[i] : 0UL;
+            if (hasResident)
+                row.ResidentSizeBytes = i < rootResidentSizes.Length ? rootResidentSizes[i] : 0UL;
+            if (rootSwappedSizes != null)
+                row.SwappedSizeBytes = i < rootSwappedSizes.Length ? rootSwappedSizes[i] : 0UL;
             roots[i] = row;
+        }
+    }
+
+    private static void ApplySystemRegionSwappedSizes(
+        DecodedSnapshot decoded,
+        List<SystemMemoryRegionRow> regions,
+        bool hasSwapped)
+    {
+        if (!hasSwapped)
+            return;
+
+        var swappedPerRegion = SwappedMemoryCalculator.ComputePerSystemRegion(decoded);
+        for (var i = 0; i < regions.Count; i++)
+        {
+            var row = regions[i];
+            row.SwappedBytes = i < swappedPerRegion.Length ? swappedPerRegion[i] : 0UL;
+            regions[i] = row;
         }
     }
 

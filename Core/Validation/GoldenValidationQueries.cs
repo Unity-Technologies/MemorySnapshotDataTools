@@ -52,4 +52,13 @@ internal static class GoldenValidationQueries
         SELECT metric_group, category, committed_bytes, resident_bytes, resident_available
         FROM summary_metrics
         """;
+
+    /// <summary>
+    /// Extended summary read including the schema v2.0 swapped columns. Only run this after a
+    /// column-presence check (HasColumn) — older databases lack the columns.
+    /// </summary>
+    public const string SummaryMetricsWithSwappedSql = """
+        SELECT metric_group, category, committed_bytes, resident_bytes, resident_available, swapped_bytes, swapped_available
+        FROM summary_metrics
+        """;
 }

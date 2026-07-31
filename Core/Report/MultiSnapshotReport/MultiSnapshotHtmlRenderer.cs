@@ -26,6 +26,7 @@ public static class MultiSnapshotHtmlRenderer
     private const string GroupSerializedFile = "sf";
     private const string GroupPmr = "pmr";
     private const string GroupResidentSummary = "sumRes";
+    private const string GroupSwappedSummary = "sumSwp";
     private const string GroupCommittedSummary = "sumCom";
 
     /// <summary>One renderable value: a number (count or bytes) or null (rendered as N/A).</summary>
@@ -136,6 +137,20 @@ public static class MultiSnapshotHtmlRenderer
         };
         if (hasAndroidRuntime)
             cols.Add(new(GroupResidentSummary, "Resident Memory", "Android RT", true, r => Bytes(ResidentOf(r, CatAndroidRuntime))));
+
+        // Swapped mirrors the Resident group; cells are N/A when the capture has no swapped-page data
+        // (SwappedAvailable=false, e.g. snapshots without entries 93–97 or pre-v2.0 databases).
+        cols.AddRange(new ColumnDef[]
+        {
+            new(GroupSwappedSummary, "Swapped Memory", "Total", false, r => Bytes(TotalSwapped(r))),
+            new(GroupSwappedSummary, "Swapped Memory", "Native", false, r => Bytes(SwappedOf(r, CatNative))),
+            new(GroupSwappedSummary, "Swapped Memory", "Managed", false, r => Bytes(SwappedOf(r, CatManaged))),
+            new(GroupSwappedSummary, "Swapped Memory", "Exec & Mapped", false, r => Bytes(SwappedOf(r, CatExecutables))),
+            new(GroupSwappedSummary, "Swapped Memory", "Graphics", false, r => Bytes(SwappedOf(r, CatGraphics))),
+            new(GroupSwappedSummary, "Swapped Memory", "Untracked", false, r => Bytes(SwappedOf(r, CatUntracked))),
+        });
+        if (hasAndroidRuntime)
+            cols.Add(new(GroupSwappedSummary, "Swapped Memory", "Android RT", false, r => Bytes(SwappedOf(r, CatAndroidRuntime))));
 
         cols.AddRange(new ColumnDef[]
         {
@@ -349,6 +364,19 @@ public static class MultiSnapshotHtmlRenderer
 
     private static long? TotalCommitted(SnapshotMetricsRow snap) =>
         snap.Summary == null ? null : ClampToLong(snap.Summary.TotalAllocatedBytes);
+
+    private static long? TotalSwapped(SnapshotMetricsRow snap) =>
+        snap.Summary == null || !snap.Summary.SwappedAvailable
+            ? null
+            : ClampToLong(snap.Summary.TotalSwappedBytes);
+
+    private static long? SwappedOf(SnapshotMetricsRow snap, string categoryName)
+    {
+        var category = FindCategory(snap, categoryName);
+        if (category == null || !category.SwappedAvailable)
+            return null;
+        return ClampToLong(category.SwappedBytes);
+    }
 
     private static long? ResidentOf(SnapshotMetricsRow snap, string categoryName)
     {

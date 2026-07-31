@@ -66,6 +66,7 @@ public static class SummaryMetricsCalculator
     {
         public ulong Committed;
         public ulong Resident;
+        public ulong Swapped;
     }
 
     private struct AddressPoint
@@ -86,6 +87,7 @@ public static class SummaryMetricsCalculator
     {
         var hasSystemRegions = decoded.SystemMemoryRegionAddresses.Length > 0;
         var hasResidentPages = ResidentMemoryCalculator.HasPerObjectResident(decoded);
+        var hasSwappedPages = SwappedMemoryCalculator.HasPerObjectSwapped(decoded);
         var isAndroid = (decoded.CaptureMetadata.Platform ?? string.Empty)
             .Contains("Android", StringComparison.OrdinalIgnoreCase);
 
@@ -94,6 +96,8 @@ public static class SummaryMetricsCalculator
 
         var pageStates = hasResidentPages ? new BitArray(decoded.SystemMemoryResidentPageStates[0]) : null;
         var pageSize = decoded.SystemMemoryResidentPageSize;
+        var swappedStates = hasSwappedPages ? new BitArray(decoded.SystemMemorySwappedPageStates[0]) : null;
+        var swappedPageSize = decoded.SystemMemorySwappedPageSize;
 
         var native = default(Mem);
         var managed = default(Mem);
@@ -131,6 +135,7 @@ public static class SummaryMetricsCalculator
                 continue;
 
             var resident = 0UL;
+            var swapped = 0UL;
             if (hasSystemRegions)
             {
                 // Items outside any system region exist due to capture timing differences; skip them.
@@ -142,9 +147,15 @@ public static class SummaryMetricsCalculator
                     resident = ResidentMemoryCalculator.CalculateResidentForRange(
                         decoded, pageStates, pageSize, currentSystemRegion, cur.Address, size);
                 }
+
+                if (swappedStates != null)
+                {
+                    swapped = SwappedMemoryCalculator.CalculateSwappedForRange(
+                        decoded, swappedStates, swappedPageSize, currentSystemRegion, cur.Address, size);
+                }
             }
 
-            var span = new Mem { Committed = size, Resident = resident };
+            var span = new Mem { Committed = size, Resident = resident, Swapped = swapped };
             if (vmRootId != long.MinValue && SpanRootReferenceId(decoded, cur) == vmRootId)
                 Add(ref vmRoot, span);
 
@@ -188,12 +199,15 @@ public static class SummaryMetricsCalculator
         // Move the VM root out of Native into Managed (Allocated Memory Distribution), mirroring the builder.
         var vmRootCommitted = vmRoot.Committed;
         var vmRootResident = vmRoot.Resident;
+        var vmRootSwapped = vmRoot.Swapped;
         if (vmRootId != long.MinValue)
         {
             managed.Committed += vmRootCommitted;
             managed.Resident += vmRootResident;
+            managed.Swapped += vmRootSwapped;
             native.Committed -= Math.Min(native.Committed, vmRootCommitted);
             native.Resident -= Math.Min(native.Resident, vmRootResident);
+            native.Swapped -= Math.Min(native.Swapped, vmRootSwapped);
         }
 
         var result = new SummaryMetrics
@@ -201,27 +215,30 @@ public static class SummaryMetricsCalculator
             // Total committed comes from the address-spectrum total (or legacy fallback); graphics/untracked
             // shuffling preserves it. Total resident is the resident of EVERY flattened span (including the
             // Graphics and Untracked regions), matching ResidentMemorySummaryModelBuilder — not just the rows
-            // whose per-category resident is surfaced in the UI.
+            // whose per-category resident is surfaced in the UI. Total swapped mirrors total resident.
             TotalAllocatedBytes = total.Committed,
             TotalResidentBytes = total.Resident,
+            TotalSwappedBytes = total.Swapped,
+            SwappedAvailable = hasSwappedPages,
         };
 
-        result.AllocatedMemoryDistribution.Add(Category(CategoryNative, native, true));
-        result.AllocatedMemoryDistribution.Add(Category(CategoryManaged, managed, true));
-        result.AllocatedMemoryDistribution.Add(Category(CategoryExecutablesAndMapped, mapped, true));
-        result.AllocatedMemoryDistribution.Add(Category(CategoryGraphics, graphics, false));
-        result.AllocatedMemoryDistribution.Add(Category(CategoryUntracked, untracked, false));
+        result.AllocatedMemoryDistribution.Add(Category(CategoryNative, native, true, hasSwappedPages));
+        result.AllocatedMemoryDistribution.Add(Category(CategoryManaged, managed, true, hasSwappedPages));
+        result.AllocatedMemoryDistribution.Add(Category(CategoryExecutablesAndMapped, mapped, true, hasSwappedPages));
+        result.AllocatedMemoryDistribution.Add(Category(CategoryGraphics, graphics, false, hasSwappedPages));
+        result.AllocatedMemoryDistribution.Add(Category(CategoryUntracked, untracked, false, hasSwappedPages));
         if (androidRuntime.Committed > 0)
-            result.AllocatedMemoryDistribution.Add(Category("Android Runtime", androidRuntime, true));
+            result.AllocatedMemoryDistribution.Add(Category("Android Runtime", androidRuntime, true, hasSwappedPages));
 
         // Managed Heap Utilization: add the VM root to the Virtual Machine row, mirroring the builder.
         var virtualMachine = vmSection;
         virtualMachine.Committed += vmRootCommitted;
         virtualMachine.Resident += vmRootResident;
+        virtualMachine.Swapped += vmRootSwapped;
 
-        result.ManagedHeapUtilization.Add(Category(CategoryVirtualMachine, virtualMachine, true));
-        result.ManagedHeapUtilization.Add(Category(CategoryObjects, objects, true));
-        result.ManagedHeapUtilization.Add(Category(CategoryEmptyHeapSpace, emptyHeapSpace, true));
+        result.ManagedHeapUtilization.Add(Category(CategoryVirtualMachine, virtualMachine, true, hasSwappedPages));
+        result.ManagedHeapUtilization.Add(Category(CategoryObjects, objects, true, hasSwappedPages));
+        result.ManagedHeapUtilization.Add(Category(CategoryEmptyHeapSpace, emptyHeapSpace, true, hasSwappedPages));
 
         return result;
     }
@@ -543,14 +560,22 @@ public static class SummaryMetricsCalculator
     {
         target.Committed += value.Committed;
         target.Resident += value.Resident;
+        target.Swapped += value.Swapped;
     }
 
-    private static SummaryCategory Category(string name, Mem mem, bool residentAvailable) =>
-        new()
+    private static SummaryCategory Category(string name, Mem mem, bool residentAvailable, bool hasSwappedPages)
+    {
+        // Swapped availability follows resident per-category semantics (Graphics/Untracked cannot be
+        // measured per page) and additionally requires the optional swapped-page entries to be present.
+        var swappedAvailable = residentAvailable && hasSwappedPages;
+        return new()
         {
             Name = name,
             CommittedBytes = mem.Committed,
             ResidentBytes = residentAvailable ? mem.Resident : 0,
             ResidentAvailable = residentAvailable,
+            SwappedBytes = swappedAvailable ? mem.Swapped : 0,
+            SwappedAvailable = swappedAvailable,
         };
+    }
 }

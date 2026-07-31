@@ -98,6 +98,7 @@ public sealed class SnapshotBridgeTests
         Assert.Equal(64UL, row.SizeBytes);
         Assert.Equal(0UL, row.NativeObjectAddress);
         Assert.Null(row.ResidentSizeBytes);
+        Assert.Null(row.SwappedSizeBytes);
         Assert.Equal(0, row.TypeIndex);
         Assert.Equal("GameObject", row.NativeTypeName);
         Assert.False(row.IsDestroyed);

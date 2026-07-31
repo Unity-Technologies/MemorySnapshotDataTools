@@ -105,8 +105,17 @@ internal static class SnapSectionDecoders
             var residentPageRangeCount = snapshot.SystemMemoryResidentPageAddresses.Length;
             snapshot.SystemMemoryResidentPageFirstIndices = ReadIntsWithCount(reader, SnapEntryType.SystemMemoryResidentPages_FirstPageIndex, residentPageRangeCount, 0);
             snapshot.SystemMemoryResidentPageLastIndices = ReadIntsWithCount(reader, SnapEntryType.SystemMemoryResidentPages_LastPageIndex, residentPageRangeCount, 0);
-            snapshot.SystemMemoryResidentPageStates = ReadResidentPageStates(reader);
-            snapshot.SystemMemoryResidentPageSize = ReadResidentPageSize(reader);
+            snapshot.SystemMemoryResidentPageStates = ReadPageStates(reader, SnapEntryType.SystemMemoryResidentPages_PagesState);
+            snapshot.SystemMemoryResidentPageSize = ReadPageSize(reader, SnapEntryType.SystemMemoryResidentPages_PageSize);
+
+            // Swapped-page entries (93–97) are optional additions at v17. The format version stays 17,
+            // so gate on entry presence only — the ReadOptional* helpers return empty when absent.
+            snapshot.SystemMemorySwappedPageAddresses = ReadOptionalULongs(reader, SnapEntryType.SystemMemorySwappedPages_Address);
+            var swappedPageRangeCount = snapshot.SystemMemorySwappedPageAddresses.Length;
+            snapshot.SystemMemorySwappedPageFirstIndices = ReadIntsWithCount(reader, SnapEntryType.SystemMemorySwappedPages_FirstPageIndex, swappedPageRangeCount, 0);
+            snapshot.SystemMemorySwappedPageLastIndices = ReadIntsWithCount(reader, SnapEntryType.SystemMemorySwappedPages_LastPageIndex, swappedPageRangeCount, 0);
+            snapshot.SystemMemorySwappedPageStates = ReadPageStates(reader, SnapEntryType.SystemMemorySwappedPages_PagesState);
+            snapshot.SystemMemorySwappedPageSize = ReadPageSize(reader, SnapEntryType.SystemMemorySwappedPages_PageSize);
         }
 
         ValidateLengths(snapshot);
@@ -171,6 +180,13 @@ internal static class SnapSectionDecoders
         {
             EnsureArrayLength(residentPageCount, snapshot.SystemMemoryResidentPageFirstIndices.Length, "SystemMemoryResidentPages_FirstPageIndex");
             EnsureArrayLength(residentPageCount, snapshot.SystemMemoryResidentPageLastIndices.Length, "SystemMemoryResidentPages_LastPageIndex");
+        }
+
+        var swappedPageCount = snapshot.SystemMemorySwappedPageAddresses.Length;
+        if (swappedPageCount > 0)
+        {
+            EnsureArrayLength(swappedPageCount, snapshot.SystemMemorySwappedPageFirstIndices.Length, "SystemMemorySwappedPages_FirstPageIndex");
+            EnsureArrayLength(swappedPageCount, snapshot.SystemMemorySwappedPageLastIndices.Length, "SystemMemorySwappedPages_LastPageIndex");
         }
 
         EnsureArrayLength(snapshot.ManagedHeapSectionStartAddresses.Length, snapshot.ManagedHeapSectionBytes.Length, "ManagedHeapSections_Bytes");
@@ -569,14 +585,18 @@ internal static class SnapSectionDecoders
         }
     }
 
-    private static ulong ReadResidentPageSize(SnapReader reader)
+    /// <summary>
+    /// Reads a page-size entry (resident 92 or swapped 97) as a raw byte count: a uint[] or ulong[]
+    /// whose element [0] holds the page size. Returns 0 when the entry is absent or unreadable.
+    /// </summary>
+    private static ulong ReadPageSize(SnapReader reader, SnapEntryType type)
     {
-        if (!reader.HasEntry(SnapEntryType.SystemMemoryResidentPages_PageSize))
+        if (!reader.HasEntry(type))
             return 0;
 
         try
         {
-            var uints = reader.ReadPrimitiveArray<uint>(SnapEntryType.SystemMemoryResidentPages_PageSize);
+            var uints = reader.ReadPrimitiveArray<uint>(type);
             if (uints.Length > 0)
                 return uints[0];
         }
@@ -587,7 +607,7 @@ internal static class SnapSectionDecoders
 
         try
         {
-            var ulongs = reader.ReadPrimitiveArray<ulong>(SnapEntryType.SystemMemoryResidentPages_PageSize);
+            var ulongs = reader.ReadPrimitiveArray<ulong>(type);
             if (ulongs.Length > 0)
                 return ulongs[0];
         }
@@ -599,14 +619,18 @@ internal static class SnapSectionDecoders
         return 0;
     }
 
-    private static byte[][] ReadResidentPageStates(SnapReader reader)
+    /// <summary>
+    /// Reads a global page bitset entry (resident 91 or swapped 96): a single dynamic-size byte blob
+    /// where bit i (LSB-first) is page i's state. Only element [0] is meaningful.
+    /// </summary>
+    private static byte[][] ReadPageStates(SnapReader reader, SnapEntryType type)
     {
-        if (!reader.HasEntry(SnapEntryType.SystemMemoryResidentPages_PagesState))
+        if (!reader.HasEntry(type))
             return [];
 
         try
         {
-            var dynamic = reader.ReadDynamicByteArrays(SnapEntryType.SystemMemoryResidentPages_PagesState);
+            var dynamic = reader.ReadDynamicByteArrays(type);
             if (dynamic.Length > 0 && dynamic[0].Length > 0)
                 return new[] { dynamic[0] };
         }
@@ -617,7 +641,7 @@ internal static class SnapSectionDecoders
 
         try
         {
-            var blob = reader.ReadConstantRangeBytes(SnapEntryType.SystemMemoryResidentPages_PagesState, 0, 1);
+            var blob = reader.ReadConstantRangeBytes(type, 0, 1);
             if (blob.Length > 0)
                 return new[] { blob };
         }

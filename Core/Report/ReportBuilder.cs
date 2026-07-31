@@ -324,6 +324,19 @@ internal static class ReportBuilder
         var (aeCols, aeRows) = backend.ExecuteQuery(ReportSql.AllocationEfficiency);
         var regionsGroup = new ReportGroup { GroupTitle = "🗂️ Memory & Allocations", GroupDesc = "Memory regions and allocation efficiency" };
         regionsGroup.Sections.Add(new ReportSection { Anchor = "regions", SectionTitle = "🗂️ Memory Regions", ContentHtml = ReportHtmlHelper.Section("regions", "🗂️ Memory Regions", ReportHtmlHelper.RenderTable(regCols, regRows), regRows.Count), RowCount = regRows.Count });
+
+        // OS system memory regions (committed/resident, plus swapped for schema v2.0+ databases).
+        // Both branches are hard-coded ReportSql constants chosen by HasColumn — no external input.
+        if (backend.HasColumn("system_memory_regions", "region_index"))
+        {
+            var systemRegionSql = backend.HasColumn("system_memory_regions", "swapped_bytes")
+                ? ReportSql.SystemMemoryRegionsWithSwapped
+                : ReportSql.SystemMemoryRegions;
+            var (sysRegCols, sysRegRows) = backend.ExecuteQuery(systemRegionSql);
+            if (sysRegRows.Count > 0)
+                regionsGroup.Sections.Add(new ReportSection { Anchor = "system-regions", SectionTitle = "🗺️ System Memory Regions (OS)", ContentHtml = ReportHtmlHelper.Section("system-regions", "🗺️ System Memory Regions (OS)", ReportHtmlHelper.RenderTable(sysRegCols, sysRegRows), sysRegRows.Count), RowCount = sysRegRows.Count });
+        }
+
         regionsGroup.Sections.Add(new ReportSection { Anchor = "alloc-efficiency", SectionTitle = "⚡ Allocation Efficiency", ContentHtml = ReportHtmlHelper.Section("alloc-efficiency", "⚡ Allocation Efficiency", ReportHtmlHelper.RenderTable(aeCols, aeRows), aeRows.Count), RowCount = aeRows.Count });
         AddNav(model, regionsGroup);
         model.Groups.Add(regionsGroup);
