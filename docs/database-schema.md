@@ -41,6 +41,7 @@ Reset minor to 0 whenever you bump major.
 | 1.1 | Added `v_connection_edges` and `v_assetbundle_utilization` views (minor — upgradeable in place). |
 | 1.2 | Reformulated `v_connection_edges` joins (kind check folded into the join key) so DuckDB hash-joins instead of nested-loop — `SELECT … WHERE from_type=…` drops from minutes to sub-second (minor). |
 | 1.3 | Added `v_assetbundle_loaded_assets` view — one row per (AssetBundle, loaded native object) it references (minor — upgradeable in place). |
+| 2.0 | Added `memory_regions.resident_bytes` (per-region physical-RAM footprint, page-granularity) and the `v_leaf_region_resident` view (leaf-only, safe to `SUM`). **Major — re-export required** (new column). |
 
 **What the CLI does.** Before a read command (`report`, `summary`, `validate`),
 `DatabaseSchemaInfo.Evaluate(major, minor)` classifies the database and the CLI acts:
@@ -166,11 +167,17 @@ allocators). **Not** OS regions — see [the two region tables](#the-two-region-
 |--------|------|-------|
 | `region_index` | INTEGER PK | Target of `native_allocations.memory_region_index`. |
 | `address_base` | BIGINT | Allocator block base. |
-| `address_size` | BIGINT | Allocator block reserve. **Often 0** for grouping allocators (e.g. `ALLOC_DEFAULT`) — do not use as a container bound. |
+| `address_size` | BIGINT | Allocator block **reserve** — the address space asked for. **Often 0** for grouping allocators (e.g. `ALLOC_DEFAULT`) — do not use as a container bound. |
 | `name` | VARCHAR | Allocator name. |
 | `parent_region_index` | INTEGER | → `memory_regions.region_index` (hierarchy), or NULL. |
 | `first_allocation_index` | INTEGER | → `native_allocations.allocation_index`, or NULL. |
 | `num_allocations` | INTEGER | Allocation count in this bucket. |
+| `resident_bytes` | BIGINT | **Resident** bytes: whole OS pages inside `[address_base, address_base+address_size)` backed by physical RAM at snapshot time (page-granularity; counts against process RSS). NULL when unknown — format < 17 (no page bitmap) or `address_size` = 0. **Do not SUM over all rows** — parents overlap children, so it double-counts; sum over `v_leaf_region_resident` instead. |
+
+> **Reserved vs. allocated vs. resident.** Three different measurements for a region, easy to confuse:
+> - **Reserved** = `address_size` — address space the allocator asked the OS for. Reserving costs no RAM by itself.
+> - **Allocated (live)** = `SUM(native_allocations.size_bytes)` for allocations whose `memory_region_index` is this region — bytes actively handed out.
+> - **Resident** = `resident_bytes` — whole OS pages actually paged into physical RAM. This is what shows up in the process RSS. It is measured at page granularity (typically 4 KiB or 16 KiB, see `snapshot_info.page_size`): a page counts if any of it is backed, and partial pages spilling outside the region are trimmed off.
 
 ### `native_allocations`
 Low-level allocations Unity's allocators requested. One row per allocation.
@@ -339,6 +346,37 @@ FROM v_assetbundle_loaded_assets GROUP BY 1, 2 HAVING bundles > 1 ORDER BY bundl
 > Like `v_assetbundle_utilization`, this reflects Unity's flattened bundle→contained-object edges:
 > it is the set of **directly-referenced** loaded objects (comprehensive for bundles), not transitive
 > retained reachability, and `asset_size_bytes` is each object's **own** size.
+
+### `v_leaf_region_resident` (view)
+The **safe-to-`SUM` slice of `memory_regions.resident_bytes`.** `memory_regions` is a hierarchy in which
+a parent region's `[address_base, address_size)` range fully **contains** its children's ranges, so a
+resident page is charged to the leaf region *and* to every ancestor. Summing `resident_bytes` over the
+whole table therefore **double-counts**. This view keeps only **leaf** regions — those whose
+`region_index` is never any other region's `parent_region_index` — so `SUM(resident_bytes)` over it
+approximates the Unity-allocator-tracked resident footprint without double-counting.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `region_index` | INTEGER | Leaf region's `memory_regions.region_index`. |
+| `name` | VARCHAR | Allocator name. |
+| `address_base` | BIGINT | Region base address. |
+| `address_size` | BIGINT | **Reserved** address space (bytes). |
+| `resident_bytes` | BIGINT | **Resident** bytes — whole OS pages backed by physical RAM (counts against RSS). NULL when unknown (format < 17 or `address_size` = 0). |
+| `resident_pct` | DOUBLE | `resident_bytes / address_size` as a percentage — how much of the reserved range is actually paged in. |
+
+```sql
+-- Total resident RAM held by leaf allocator regions (no double-counting).
+SELECT ROUND(SUM(resident_bytes) / 1048576.0, 1) AS resident_mb FROM v_leaf_region_resident;
+
+-- Biggest resident leaf regions.
+SELECT name, ROUND(resident_bytes / 1048576.0, 2) AS resident_mb, resident_pct
+FROM v_leaf_region_resident WHERE resident_bytes IS NOT NULL
+ORDER BY resident_bytes DESC LIMIT 20;
+```
+
+> Every leaf region's `resident_bytes` is `≤` its `address_size` (a region can't have more RAM resident
+> than it reserved). The leaf sum is `≤` the process resident total in `summary_metrics` (`Totals`),
+> because it only covers Unity-allocator regions, not the whole process VM.
 
 ### `region_allocations(region_name)` (DuckDB macro)
 All `v_allocation_enriched` rows for one OS region: `SELECT * FROM region_allocations('MALLOC_NANO');`

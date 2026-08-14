@@ -378,6 +378,9 @@ internal static class SqliteWriter
                             regionCmd.Parameters[4].Value = row.ParentRegionIndex >= 0 ? row.ParentRegionIndex : DBNull.Value;
                             regionCmd.Parameters[5].Value = row.FirstAllocationIndex >= 0 ? row.FirstAllocationIndex : DBNull.Value;
                             regionCmd.Parameters[6].Value = row.NumAllocations;
+                            regionCmd.Parameters[7].Value = row.ResidentSizeBytes.HasValue
+                                ? unchecked((long)row.ResidentSizeBytes.Value)
+                                : DBNull.Value;
                             regionCmd.ExecuteNonQuery();
                         }
                         regionSw.Stop();
@@ -530,7 +533,7 @@ internal static class SqliteWriter
     {
         var command = connection.CreateCommand();
         command.Transaction = tx;
-        command.CommandText = "INSERT INTO memory_regions(region_index, address_base, address_size, name, parent_region_index, first_allocation_index, num_allocations) VALUES ($i, $ab, $as, $n, $p, $f, $c);";
+        command.CommandText = "INSERT INTO memory_regions(region_index, address_base, address_size, name, parent_region_index, first_allocation_index, num_allocations, resident_bytes) VALUES ($i, $ab, $as, $n, $p, $f, $c, $r);";
         _ = command.Parameters.Add("$i", SqliteType.Integer);
         _ = command.Parameters.Add("$ab", SqliteType.Integer);
         _ = command.Parameters.Add("$as", SqliteType.Integer);
@@ -538,6 +541,7 @@ internal static class SqliteWriter
         _ = command.Parameters.Add("$p", SqliteType.Integer);
         _ = command.Parameters.Add("$f", SqliteType.Integer);
         _ = command.Parameters.Add("$c", SqliteType.Integer);
+        _ = command.Parameters.Add("$r", SqliteType.Integer);
         return command;
     }
 
@@ -705,8 +709,8 @@ internal static class SqliteWriter
 
     private static void WriteMemoryRegionRows(SqliteConnection connection, SqliteTransaction tx, MemoryRegionRow[] rows)
     {
-        const int cols = 7;
-        const string insertPrefix = "INSERT INTO memory_regions(region_index, address_base, address_size, name, parent_region_index, first_allocation_index, num_allocations) VALUES ";
+        const int cols = 8;
+        const string insertPrefix = "INSERT INTO memory_regions(region_index, address_base, address_size, name, parent_region_index, first_allocation_index, num_allocations, resident_bytes) VALUES ";
         var rowsPerStatement = RowsPerStatement(cols);
         for (var start = 0; start < rows.Length; start += rowsPerStatement)
         {
@@ -723,6 +727,7 @@ internal static class SqliteWriter
                 command.Parameters.AddWithValue($"$p{p + 4}", row.ParentRegionIndex >= 0 ? row.ParentRegionIndex : DBNull.Value);
                 command.Parameters.AddWithValue($"$p{p + 5}", row.FirstAllocationIndex >= 0 ? row.FirstAllocationIndex : DBNull.Value);
                 command.Parameters.AddWithValue($"$p{p + 6}", row.NumAllocations);
+                command.Parameters.AddWithValue($"$p{p + 7}", row.ResidentSizeBytes.HasValue ? unchecked((long)row.ResidentSizeBytes.Value) : DBNull.Value);
             }
             command.ExecuteNonQuery();
         }
@@ -808,6 +813,7 @@ internal static class SqliteWriter
     #endregion
 
     private const string SchemaTablesScript = """
+DROP VIEW IF EXISTS v_leaf_region_resident;
 DROP VIEW IF EXISTS v_assetbundle_loaded_assets;
 DROP VIEW IF EXISTS v_assetbundle_utilization;
 DROP VIEW IF EXISTS v_connection_edges;
@@ -885,11 +891,18 @@ CREATE TABLE native_roots (
 CREATE TABLE memory_regions (
     region_index INTEGER PRIMARY KEY,
     address_base INTEGER NOT NULL,
-    address_size INTEGER NOT NULL,
+    address_size INTEGER NOT NULL,   -- RESERVED address space (bytes) the allocator asked the OS for
     name TEXT,
     parent_region_index INTEGER,
     first_allocation_index INTEGER,
-    num_allocations INTEGER NOT NULL
+    num_allocations INTEGER NOT NULL,
+    -- RESIDENT bytes: whole OS pages within [address_base, address_base+address_size) that are backed by
+    -- physical RAM at snapshot time (page-granularity; counts against process RSS). Distinct from
+    -- address_size (reserved) and from SUM(native_allocations.size_bytes) (allocated/live). NULL when
+    -- residency is unknown (snapshot format < 17 has no page bitmap, or address_size = 0).
+    -- Parent regions overlap their children, so DO NOT sum this over all rows (double-counts); sum it
+    -- over leaf regions only -- see the v_leaf_region_resident view.
+    resident_bytes INTEGER
 );
 
 CREATE TABLE native_allocations (
@@ -937,6 +950,7 @@ CREATE INDEX IF NOT EXISTS idx_system_memory_regions_address ON system_memory_re
     // Drops the analysis views so CreateViewsScript (which uses CREATE VIEW, not CREATE OR REPLACE,
     // for SQLite) is re-runnable by the in-place upgrade path. Order does not matter with IF EXISTS.
     private const string DropViewsScript = """
+DROP VIEW IF EXISTS v_leaf_region_resident;
 DROP VIEW IF EXISTS v_assetbundle_loaded_assets;
 DROP VIEW IF EXISTS v_assetbundle_utilization;
 DROP VIEW IF EXISTS v_connection_edges;
@@ -1072,6 +1086,28 @@ SELECT
 FROM refs r
 JOIN native_objects b ON b.native_object_index = r.bundle_index
 JOIN native_objects o ON o.native_object_index = r.asset_index;
+
+-- Leaf native memory regions with their resident footprint. A LEAF region is one whose region_index is
+-- never referenced as any other region's parent_region_index, i.e. it has no children. This matters
+-- because the Unity memory map is a hierarchy in which a parent region's [address_base, address_size)
+-- range fully CONTAINS its children's ranges, so parent and child resident_bytes overlap. Summing
+-- resident_bytes over ALL memory_regions therefore double-counts (a page is charged to the leaf AND to
+-- every ancestor). This view exposes only leaves, so it is the SAFE-TO-SUM slice: SUM(resident_bytes)
+-- over v_leaf_region_resident approximates the Unity-tracked resident footprint without double-counting.
+-- Columns: address_size = RESERVED bytes; resident_bytes = whole OS pages backed by RAM (RSS);
+-- resident_pct = resident_bytes / address_size (how much of the reserved range is actually paged in).
+CREATE VIEW v_leaf_region_resident AS
+SELECT
+    r.region_index,
+    r.name,
+    r.address_base,
+    r.address_size,
+    r.resident_bytes,
+    ROUND(100.0 * r.resident_bytes / NULLIF(r.address_size, 0), 1) AS resident_pct
+FROM memory_regions r
+WHERE r.region_index NOT IN (
+    SELECT parent_region_index FROM memory_regions WHERE parent_region_index IS NOT NULL
+);
 """;
 }
 

@@ -203,7 +203,13 @@ internal sealed class DuckDbExportDestination : IExportDestinationWriter
                                 r.AppendValue(row.FirstAllocationIndex);            // int  → INTEGER
                             else
                                 r.AppendNullValue();
-                            r.AppendValue(row.NumAllocations).EndRow();             // int  → INTEGER
+                            r.AppendValue(row.NumAllocations);                      // int  → INTEGER
+                            // resident_bytes: null when residency is unknown (see MemoryRegionRow doc).
+                            if (row.ResidentSizeBytes.HasValue)
+                                r.AppendValue(unchecked((long)row.ResidentSizeBytes.Value)); // ulong → BIGINT
+                            else
+                                r.AppendNullValue();
+                            r.EndRow();
                         }
                         regionSw.Stop();
                         stats.MemoryRegionRows += batch.MemoryRegions.Length;
@@ -519,11 +525,18 @@ CREATE OR REPLACE TABLE native_roots (
 CREATE OR REPLACE TABLE memory_regions (
     region_index INTEGER PRIMARY KEY,
     address_base BIGINT NOT NULL,
-    address_size BIGINT NOT NULL,
+    address_size BIGINT NOT NULL,   -- RESERVED address space (bytes) the allocator asked the OS for
     name VARCHAR,
     parent_region_index INTEGER,
     first_allocation_index INTEGER,
-    num_allocations INTEGER NOT NULL
+    num_allocations INTEGER NOT NULL,
+    -- RESIDENT bytes: whole OS pages within [address_base, address_base+address_size) that are backed by
+    -- physical RAM at snapshot time (page-granularity, counts against process RSS). Distinct from
+    -- address_size (reserved) and from SUM(native_allocations.size_bytes) (allocated/live). NULL when
+    -- residency is unknown (snapshot format < 17 has no page bitmap, or address_size = 0).
+    -- Parent regions overlap their children, so DO NOT sum this over all rows (it double-counts) -- sum
+    -- over leaf regions only, via the v_leaf_region_resident view.
+    resident_bytes BIGINT
 );
 
 CREATE OR REPLACE TABLE native_allocations (
@@ -694,6 +707,28 @@ SELECT
 FROM refs r
 JOIN native_objects b ON b.native_object_index = r.bundle_index
 JOIN native_objects o ON o.native_object_index = r.asset_index;
+
+-- Leaf native memory regions with their resident footprint. A LEAF region is one whose region_index is
+-- never referenced as any other region's parent_region_index, i.e. it has no children. This matters
+-- because the Unity memory map is a hierarchy in which a parent region's [address_base, address_size)
+-- range fully CONTAINS its children's ranges, so parent and child resident_bytes overlap. Summing
+-- resident_bytes over ALL memory_regions therefore double-counts (a page is charged to the leaf AND to
+-- every ancestor). This view exposes only leaves, so it is the SAFE-TO-SUM slice: SUM(resident_bytes)
+-- over v_leaf_region_resident approximates the Unity-tracked resident footprint without double-counting.
+-- Columns: address_size is RESERVED bytes, resident_bytes is whole OS pages backed by RAM (RSS), and
+-- resident_pct is resident_bytes / address_size (how much of the reserved range is actually paged in).
+CREATE OR REPLACE VIEW v_leaf_region_resident AS
+SELECT
+    r.region_index,
+    r.name,
+    r.address_base,
+    r.address_size,
+    r.resident_bytes,
+    ROUND(100.0 * r.resident_bytes / NULLIF(r.address_size, 0), 1) AS resident_pct
+FROM memory_regions r
+WHERE r.region_index NOT IN (
+    SELECT parent_region_index FROM memory_regions WHERE parent_region_index IS NOT NULL
+);
 
 CREATE OR REPLACE MACRO region_allocations(region_name) AS TABLE
     SELECT * FROM v_allocation_enriched WHERE system_region_name = region_name;

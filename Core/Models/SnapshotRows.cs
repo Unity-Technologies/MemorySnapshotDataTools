@@ -134,6 +134,19 @@ public struct MemoryRegionRow
 
     /// <summary>Number of allocations in this region.</summary>
     public int NumAllocations;
+
+    /// <summary>
+    /// Resident size in bytes for this region: the whole OS pages within the region's reserved range
+    /// (<see cref="AddressBase"/> .. <see cref="AddressBase"/>+<see cref="AddressSize"/>) that are backed
+    /// by physical RAM at snapshot time, measured at page granularity. This is distinct from
+    /// <see cref="AddressSize"/> (<b>reserved</b> address space) and from the sum of the region's
+    /// <c>native_allocations.size_bytes</c> (<b>allocated/live</b> bytes); resident is what counts against
+    /// the process RSS. <c>null</c> when residency is unknown — the snapshot has no page bitmap
+    /// (format &lt; 17) or the region reserves no address space (<see cref="AddressSize"/> == 0).
+    /// Note that parent regions overlap their children, so summing this column over ALL rows double-counts;
+    /// sum it only over leaf regions (see the <c>v_leaf_region_resident</c> view).
+    /// </summary>
+    public ulong? ResidentSizeBytes;
 }
 
 /// <summary>

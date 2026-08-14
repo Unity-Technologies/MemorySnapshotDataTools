@@ -171,12 +171,18 @@ internal static class ReportSql
         LIMIT 30;
         """;
 
+    // reserved_mb = address space asked for (address_size); resident_mb = whole OS pages backed by
+    // physical RAM (resident_bytes, page-granularity, counts against RSS), blank when unknown
+    // (snapshot format < 17, or address_size = 0). See docs/database-schema.md "Reserved vs. allocated
+    // vs. resident". Rows here are individual regions (parents overlap children) — do not sum resident_mb
+    // across them; the leaf-only v_leaf_region_resident view is the safe-to-sum slice.
     public const string MemoryRegions = """
         SELECT
             r.region_index,
             COALESCE(r.name, '(unnamed)') AS region_name,
             COALESCE(p.name, '—') AS parent_name,
-            ROUND(r.address_size / 1024.0 / 1024, 2) AS size_mb,
+            ROUND(r.address_size / 1024.0 / 1024, 2) AS reserved_mb,
+            ROUND(r.resident_bytes / 1024.0 / 1024, 2) AS resident_mb,
             r.num_allocations
         FROM memory_regions r
         LEFT JOIN memory_regions p ON p.region_index = r.parent_region_index

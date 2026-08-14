@@ -178,6 +178,12 @@ public static class SnapshotBridge
     private static void ExtractMemoryRegions(DecodedSnapshot decoded, List<MemoryRegionRow> output)
     {
         output.Capacity = decoded.NativeMemoryRegionAddressBases.Length;
+
+        // Compute per-region resident bytes once (page-granularity intersection with the residency
+        // bitmap). Entries are null when residency is unknown: the whole array is null when the snapshot
+        // has no page bitmap (format < 17), and individual entries are null for zero-size regions.
+        var regionResident = ResidentMemoryCalculator.ComputePerRegion(decoded);
+
         for (var i = 0; i < decoded.NativeMemoryRegionAddressBases.Length; i++)
         {
             output.Add(new MemoryRegionRow
@@ -189,6 +195,7 @@ public static class SnapshotBridge
                 ParentRegionIndex = decoded.NativeMemoryRegionParentIndices[i],
                 FirstAllocationIndex = decoded.NativeMemoryRegionFirstAllocationIndices[i],
                 NumAllocations = decoded.NativeMemoryRegionNumAllocations[i],
+                ResidentSizeBytes = i < regionResident.Length ? regionResident[i] : null,
             });
         }
     }

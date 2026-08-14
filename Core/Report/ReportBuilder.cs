@@ -323,7 +323,13 @@ internal static class ReportBuilder
         var (regCols, regRows) = backend.ExecuteQuery(ReportSql.MemoryRegions);
         var (aeCols, aeRows) = backend.ExecuteQuery(ReportSql.AllocationEfficiency);
         var regionsGroup = new ReportGroup { GroupTitle = "🗂️ Memory & Allocations", GroupDesc = "Memory regions and allocation efficiency" };
-        regionsGroup.Sections.Add(new ReportSection { Anchor = "regions", SectionTitle = "🗂️ Memory Regions", ContentHtml = ReportHtmlHelper.Section("regions", "🗂️ Memory Regions", ReportHtmlHelper.RenderTable(regCols, regRows), regRows.Count), RowCount = regRows.Count });
+        var insightRegions = ReportHtmlHelper.RenderInsight(
+            "Unity allocator regions. <b>reserved_mb</b> = address space asked for; " +
+            "<b>resident_mb</b> = whole OS pages actually backed by physical RAM (counts against process RSS, " +
+            "measured at page granularity; blank when unknown for snapshots older than format 17). " +
+            "Rows are individual regions and parents overlap their children, so do not sum resident_mb across " +
+            "them — use the <code>v_leaf_region_resident</code> view for a safe total.");
+        regionsGroup.Sections.Add(new ReportSection { Anchor = "regions", SectionTitle = "🗂️ Memory Regions", ContentHtml = ReportHtmlHelper.Section("regions", "🗂️ Memory Regions", insightRegions + ReportHtmlHelper.RenderTable(regCols, regRows), regRows.Count), RowCount = regRows.Count });
         regionsGroup.Sections.Add(new ReportSection { Anchor = "alloc-efficiency", SectionTitle = "⚡ Allocation Efficiency", ContentHtml = ReportHtmlHelper.Section("alloc-efficiency", "⚡ Allocation Efficiency", ReportHtmlHelper.RenderTable(aeCols, aeRows), aeRows.Count), RowCount = aeRows.Count });
         AddNav(model, regionsGroup);
         model.Groups.Add(regionsGroup);

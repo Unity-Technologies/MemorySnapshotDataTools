@@ -57,10 +57,10 @@ public enum SchemaAction
 public static class DatabaseSchemaInfo
 {
     /// <summary>Current major schema version (table/column structure). A lower major requires re-export.</summary>
-    public const int SchemaMajor = 1;
+    public const int SchemaMajor = 2;
 
     /// <summary>Current minor schema version (views/indexes). A lower minor can be upgraded in place.</summary>
-    public const int SchemaMinor = 3;
+    public const int SchemaMinor = 0;
 
     /// <summary>Name used in advisories to refer to the CLI tool.</summary>
     public const string ToolName = "MemorySnapshotDataTools";
@@ -83,6 +83,7 @@ public static class DatabaseSchemaInfo
         (1, 1, "Added v_connection_edges and v_assetbundle_utilization views."),
         (1, 2, "Reformulated v_connection_edges joins so filtered queries hash-join (much faster)."),
         (1, 3, "Added v_assetbundle_loaded_assets view (the assets each AssetBundle keeps loaded)."),
+        (2, 0, "Added memory_regions.resident_bytes (per-region physical-RAM footprint) and the v_leaf_region_resident view (safe-to-sum, leaf-only)."),
     };
 
     /// <summary>

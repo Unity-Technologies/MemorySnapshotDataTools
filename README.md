@@ -175,10 +175,22 @@ MemorySnapshotDataTools upgrade ./out.duckdb
 | `managed_objects`   | Managed heap objects (address, type, size)       |
 | `connections`       | Edges: from_kind/from_index → to_kind/to_index   |
 | `native_roots`      | Root references and accumulated size            |
-| `memory_regions`    | Native memory regions (address, size, hierarchy) |
+| `memory_regions`    | Native memory regions (address, reserved size, resident bytes, hierarchy) |
 | `native_allocations`| Allocations within regions                       |
 
 Use any DuckDB or SQLite client to query these tables.
+
+### Reserved vs. allocated vs. resident
+
+Three distinct measurements apply to a native memory region (`memory_regions`) — don't confuse them:
+
+- **Reserved** — `memory_regions.address_size`: address space the allocator asked the OS for. Reserving costs no physical memory by itself.
+- **Allocated (live)** — `SUM(native_allocations.size_bytes)` for allocations in the region: bytes actively handed out to callers.
+- **Resident** — `memory_regions.resident_bytes`: whole OS pages actually backed by physical RAM at snapshot time. This is what counts against the process RSS. Measured at page granularity (`snapshot_info.page_size`, typically 4–16 KiB); a page counts if any of it is backed, partial edge pages are trimmed. `NULL` when unknown (snapshot format < 17 has no residency bitmap, or the region reserves nothing).
+
+`resident_bytes` is populated per region, but **parent regions overlap their children**, so summing it over
+every row double-counts. To total resident RAM safely, sum over the leaf-only view **`v_leaf_region_resident`**
+(exposes `region_index`, `name`, `address_base`, `address_size`, `resident_bytes`, and `resident_pct`).
 
 ## Build and test
 

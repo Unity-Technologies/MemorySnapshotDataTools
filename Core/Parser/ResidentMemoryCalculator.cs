@@ -3,9 +3,11 @@ using System.Collections;
 namespace MemorySnapshotDataTools.Parser;
 
 /// <summary>
-/// Computes per-native-object and per-allocation resident memory sizes by intersecting
-/// address ranges with OS page residency bitmaps from <c>SystemMemoryResidentPages_*</c> entries.
-/// Only produces non-zero values for format v17+ snapshots with resident page data.
+/// Computes per-native-object, per-allocation, and per-memory-region resident memory sizes by
+/// intersecting address ranges with OS page residency bitmaps from <c>SystemMemoryResidentPages_*</c>
+/// entries. Resident bytes = whole OS pages backed by physical RAM (counts against process RSS), as
+/// opposed to reserved address space or live/allocated bytes.
+/// Only produces non-null/non-zero values for format v17+ snapshots with resident page data.
 /// </summary>
 internal static class ResidentMemoryCalculator
 {
@@ -88,6 +90,97 @@ internal static class ResidentMemoryCalculator
                 pageSize,
                 regionIndex,
                 address,
+                size);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Computes per-native-memory-region resident bytes: the number of bytes inside each Unity
+    /// native memory region that are actually backed by physical RAM at snapshot time.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Three related-but-distinct concepts apply to a memory region:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>
+    /// <b>Reserved</b> — the size of the address-space range the allocator asked the OS for
+    /// (<c>NativeMemoryRegionAddressSizes</c> / the <c>address_size</c> column). Reserving address space
+    /// costs no physical memory on its own.
+    /// </description></item>
+    /// <item><description>
+    /// <b>Allocated (live)</b> — the bytes actively handed out to callers inside the region
+    /// (the sum of <c>native_allocations.size_bytes</c> whose <c>memory_region_index</c> is this region).
+    /// </description></item>
+    /// <item><description>
+    /// <b>Resident</b> — the value computed here: whole OS pages within the reserved range that are
+    /// currently paged into physical RAM. This is what counts against the process RSS. It is measured at
+    /// page granularity (typically 4 KiB or 16 KiB), so it is neither the reserved size nor the live size:
+    /// a page counts as resident if any part of it is backed, and partial head/tail pages that fall
+    /// outside the region range are trimmed off.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// Returns an array indexed by native memory region. An entry is <c>null</c> when it cannot be
+    /// determined: the whole array is <c>null</c>-filled when the snapshot carries no residency bitmap
+    /// (format &lt; 17, so residency is <i>unknown</i> rather than zero), and an individual entry is
+    /// <c>null</c> when the region reserves no address space (<c>size == 0</c>). An entry is <c>0</c> when
+    /// the region is genuinely covered by residency data but no backing page overlaps it.
+    /// </para>
+    /// </remarks>
+    /// <param name="decoded">The decoded snapshot.</param>
+    /// <returns>Per-region resident bytes; <c>null</c> entries mean "unknown", <c>0</c> means "none resident".</returns>
+    public static ulong?[] ComputePerRegion(DecodedSnapshot decoded)
+    {
+        var count = decoded.NativeMemoryRegionAddressBases.Length;
+        var result = new ulong?[count];
+
+        // No residency bitmap in this snapshot (format < 17): residency is UNKNOWN, not zero.
+        // Leave every entry null so the exported column is NULL rather than a misleading 0.
+        if (!HasPerObjectResident(decoded))
+            return result;
+
+        var pageStates = new BitArray(decoded.SystemMemoryResidentPageStates[0]);
+        var pageSize = decoded.SystemMemoryResidentPageSize;
+
+        for (var i = 0; i < count; i++)
+        {
+            var baseAddress = decoded.NativeMemoryRegionAddressBases[i];
+            var size = i < decoded.NativeMemoryRegionAddressSizes.Length
+                ? decoded.NativeMemoryRegionAddressSizes[i]
+                : 0UL;
+
+            // A region that reserves no address space has no meaningful resident value → null.
+            if (size == 0)
+            {
+                result[i] = null;
+                continue;
+            }
+
+            // Locate the resident-page range that covers this region's base address. If none covers it,
+            // the region's pages are simply absent from the bitmap → 0 bytes resident (known, not unknown).
+            var regionIndex = FindResidentPageRegionIndex(decoded, baseAddress);
+            if (regionIndex < 0)
+            {
+                result[i] = 0;
+                continue;
+            }
+
+            // CalculateResidentForRange maps [base, base+size) onto pages in the covering range, sums
+            // pageSize per set residency bit, and trims the partial head/tail pages. Its existing guard
+            // returns 0 when the range would extend past the covering page range (i.e. the region would
+            // span more than one resident-page range). That edge case was NOT observed in the test data;
+            // treating it as 0 keeps behavior identical to the per-object/per-allocation calculators and
+            // never over-counts. If it ever needs exact handling, the range would have to be split across
+            // consecutive resident-page ranges here.
+            result[i] = CalculateResidentForRange(
+                decoded,
+                pageStates,
+                pageSize,
+                regionIndex,
+                baseAddress,
                 size);
         }
 
